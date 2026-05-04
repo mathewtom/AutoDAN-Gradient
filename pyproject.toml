@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "autodan-gradient-lab"
+version = "0.1.0"
+description = "AutoDAN-Gradient (Zhu) scanner-evasion harness targeting SecureRAG-Agent"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # Surrogate model (8B) — HF Transformers on Apple MPS. Gradient
+    # optimization needs autograd over the model's embedding layer, so
+    # eager mode (no torch.compile) is the default.
+    "torch>=2.4",
+    "transformers>=4.45",
+    "accelerate>=1.0",
+    # OpenAI-tool schema conversion for chat-template tool bindings
+    "langchain-core",
+    # Transfer-phase HTTP client to /agent/query
+    "requests>=2.32",
+    "httpx>=0.28",
+    # Target system under test — editable install. Imports InjectionScanner,
+    # build_system_prompt, and the production BaseTool list directly so
+    # fitness scoring matches runtime behavior.
+    "securerag-agent",
+    "python-dotenv>=1.2.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov",
+    "ruff>=0.15",
+    "mypy>=1.13",
+]
+
+[tool.uv.sources]
+securerag-agent = { path = "../SecureRAG-Agent", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["surrogate", "attacks"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+markers = [
+    "slow: gradient optimization runs that take >30s",
+    "transfer: requires a running SecureRAG-Agent at SECURERAG_AGENT_URL",
+]
