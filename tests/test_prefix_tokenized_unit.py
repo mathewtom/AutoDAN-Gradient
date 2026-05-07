@@ -48,10 +48,23 @@ class StubTokenizer:
         return_tensors: str | None = None,
     ):
         del add_special_tokens
-        ids = torch.tensor([[ord(c) for c in text]], dtype=torch.long)
-        offsets = torch.tensor(
-            [[(i, i + 1) for i in range(len(text))]], dtype=torch.long,
-        )
+        # Char-per-token, EXCEPT " !" merges to a single token (id 758,
+        # mimicking Llama 3.1's BPE behavior on this pair). This is
+        # what makes the seed-padding logic testable against the stub.
+        token_ids: list[int] = []
+        offsets_list: list[tuple[int, int]] = []
+        i = 0
+        while i < len(text):
+            if i + 1 < len(text) and text[i] == " " and text[i + 1] == "!":
+                token_ids.append(758)
+                offsets_list.append((i, i + 2))
+                i += 2
+            else:
+                token_ids.append(ord(text[i]))
+                offsets_list.append((i, i + 1))
+                i += 1
+        ids = torch.tensor([token_ids], dtype=torch.long)
+        offsets = torch.tensor([offsets_list], dtype=torch.long)
         result: dict = {"input_ids": ids}
         if return_offsets_mapping:
             result["offset_mapping"] = offsets
@@ -61,7 +74,13 @@ class StubTokenizer:
         del skip_special_tokens
         if isinstance(ids, torch.Tensor):
             ids = ids.tolist()
-        return "".join(chr(int(i)) for i in ids)
+        out = []
+        for i in ids:
+            if int(i) == 758:
+                out.append(" !")
+            else:
+                out.append(chr(int(i)))
+        return "".join(out)
 
     def apply_chat_template(
         self, messages, *,
@@ -111,10 +130,9 @@ def test_basic_shape():
         assert isinstance(t, torch.Tensor)
         assert t.dim() == 1
         assert t.dtype == torch.long
-    expected_suffix_text = (" !") * _SUFFIX_LEN
-    # In the char-per-token stub, suffix length in tokens equals length
-    # of the suffix-init text in characters.
-    assert out.suffix_init_ids.shape[0] == len(expected_suffix_text)
+    # The stub merges " !" into one token, so suffix_init = (" !") * N
+    # tokenizes to exactly N tokens, matching suffix_len.
+    assert out.suffix_init_ids.shape[0] == _SUFFIX_LEN
 
 
 def test_concat_round_trip():
@@ -153,6 +171,40 @@ def test_seed_collision_with_template_raises():
             seed_prefix="Hello",  # appears twice in system + once in user
             suffix_len=_SUFFIX_LEN,
             target_string=_FAKE_TARGET,
+        )
+
+
+def test_seed_text_pads_with_filler_to_match_suffix_len():
+    """Caller-provided seed text is padded with ' !' until the suffix
+    region tokenizes to exactly suffix_len tokens. The seed appears at
+    the head; filler at the tail."""
+    out = render_prefix_tokenized(
+        StubTokenizer(),
+        system_prompt=_FAKE_SYSTEM,
+        tool_function_dicts=[],
+        seed_prefix=_FAKE_SEED,
+        suffix_len=_SUFFIX_LEN,
+        target_string=_FAKE_TARGET,
+        suffix_init_text="ABC",     # 3 chars/tokens in the stub
+    )
+    assert out.suffix_init_ids.shape[0] == _SUFFIX_LEN
+    decoded = StubTokenizer().decode(out.suffix_init_ids)
+    # Seed "ABC" = 3 tokens, deficit = 2, padded with 2 " !" tokens.
+    assert decoded == "ABC" + " !" * 2
+
+
+def test_seed_text_longer_than_suffix_len_raises():
+    """If the seed alone tokenizes to more than suffix_len, surface
+    loudly rather than truncating."""
+    with pytest.raises(RuntimeError, match="exceeds suffix_len"):
+        render_prefix_tokenized(
+            StubTokenizer(),
+            system_prompt=_FAKE_SYSTEM,
+            tool_function_dicts=[],
+            seed_prefix=_FAKE_SEED,
+            suffix_len=3,
+            target_string=_FAKE_TARGET,
+            suffix_init_text="ABCDEFG",   # 7 chars > suffix_len=3
         )
 
 

@@ -76,14 +76,27 @@ def render_prefix_tokenized(
         the seed/suffix or suffix/post-suffix boundary in a way that
         prevents clean slicing.
     """
-    # If the caller passes biased seed text via `suffix_init_text`,
-    # use it directly (and let the resulting token count override
-    # `suffix_len`). Otherwise default to the neutral " !"-repeated
-    # pattern. No trailing space — a trailing whitespace character
-    # would be tokenized together with the following `<|eot_id|>`
-    # special token and cause the suffix region to absorb the EOT.
+    # When the caller passes biased seed text via `suffix_init_text`,
+    # pad it with " !"-filler until the suffix region tokenizes to
+    # exactly `suffix_len` tokens in context. This preserves the
+    # optimizer's slot count while giving it a biased starting basin.
+    # When `suffix_init_text` is None, default to the neutral
+    # " !"-repeated pattern (already exactly `suffix_len` tokens).
+    # No trailing space in either case — a trailing whitespace would
+    # be tokenized together with the following `<|eot_id|>` special
+    # token and cause the suffix region to absorb the EOT.
     if suffix_init_text is None:
         suffix_init_text = (" " + suffix_init_token) * suffix_len
+    else:
+        suffix_init_text = _pad_seed_to_length(
+            tokenizer=tokenizer,
+            seed_text=suffix_init_text,
+            target_token_count=suffix_len,
+            system_prompt=system_prompt,
+            tool_function_dicts=tool_function_dicts,
+            seed_prefix=seed_prefix,
+            target_string=target_string,
+        )
 
     text = tokenizer.apply_chat_template(
         [
@@ -203,3 +216,89 @@ def _first_token_at_or_after(
         if s >= char_pos:
             return i
     return len(offsets)
+
+
+def _pad_seed_to_length(
+    *,
+    tokenizer: Any,
+    seed_text: str,
+    target_token_count: int,
+    system_prompt: str,
+    tool_function_dicts: list[dict],
+    seed_prefix: str,
+    target_string: str,
+    max_attempts: int = 8,
+) -> str:
+    """Append " !" filler to `seed_text` until it tokenizes to exactly
+    `target_token_count` tokens in the suffix region of the rendered
+    chat template.
+
+    Iterates because BPE tokenization is context-sensitive: appending
+    one " !" doesn't always add exactly one token (boundary merges).
+    Converges within a handful of attempts in practice.
+
+    Raises RuntimeError if the seed alone exceeds `target_token_count`,
+    or if padding fails to converge within `max_attempts` iterations.
+    """
+    candidate = seed_text
+    for _ in range(max_attempts):
+        actual = _suffix_token_count(
+            tokenizer=tokenizer,
+            seed_prefix=seed_prefix,
+            suffix_init_text=candidate,
+            system_prompt=system_prompt,
+            tool_function_dicts=tool_function_dicts,
+            target_string=target_string,
+        )
+        if actual == target_token_count:
+            return candidate
+        if actual > target_token_count:
+            raise RuntimeError(
+                f"seed text tokenizes to {actual} tokens, which exceeds "
+                f"suffix_len={target_token_count}. Pick a shorter seed "
+                "or raise --suffix-len."
+            )
+        deficit = target_token_count - actual
+        candidate = candidate + (" !" * deficit)
+    raise RuntimeError(
+        f"_pad_seed_to_length did not converge after {max_attempts} "
+        "attempts; BPE boundary effects may be cycling."
+    )
+
+
+def _suffix_token_count(
+    *,
+    tokenizer: Any,
+    seed_prefix: str,
+    suffix_init_text: str,
+    system_prompt: str,
+    tool_function_dicts: list[dict],
+    target_string: str,
+) -> int:
+    """Count how many tokens the suffix region occupies in the rendered
+    chat template, given the candidate `suffix_init_text`."""
+    text = tokenizer.apply_chat_template(
+        [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": seed_prefix + suffix_init_text},
+            {"role": "assistant", "content": target_string},
+        ],
+        tools=tool_function_dicts or None,
+        tokenize=False,
+        add_generation_prompt=False,
+    )
+    encoding = tokenizer(
+        text,
+        add_special_tokens=False,
+        return_offsets_mapping=True,
+        return_tensors="pt",
+    )
+    offsets = [
+        (int(s), int(e))
+        for s, e in encoding["offset_mapping"][0].tolist()
+    ]
+    seed_end_char = text.index(seed_prefix) + len(seed_prefix)
+    suffix_end_char = seed_end_char + len(suffix_init_text)
+    start_idx = _first_token_at_or_after(offsets, seed_end_char)
+    end_idx = _first_token_at_or_after(offsets, suffix_end_char)
+    return end_idx - start_idx
