@@ -32,7 +32,7 @@ class ObjectiveConfig:
     `lambda_readability=0` disables the readability term (= GCG/Zou).
     """
 
-    lambda_readability: float = 0.1
+    lambda_readability: float = 0.3
 
 
 class AutoDANObjective:
@@ -68,6 +68,50 @@ class AutoDANObjective:
     @property
     def device(self) -> torch.device:
         return self._embed_module.weight.device
+
+    @property
+    def forbidden_token_ids(self) -> list[int]:
+        """Token IDs the GCG step must not propose as suffix replacements.
+
+        Three classes are forbidden:
+          - registered special tokens (BOS, EOS, EOT)
+          - added tokens (reserved_special_token_*, header markers,
+            python_tag, etc.) — Llama 3.1 keeps these out of
+            `all_special_ids`
+          - byte-fallback tokens that do not decode to valid UTF-8 in
+            isolation (the visible `�` glitch). These break round-
+            tripping of the suffix to the live agent's HTTP layer.
+
+        Cached on first access — the byte scan walks the full vocab.
+        """
+        if self._tokenizer is None:
+            return []
+        if hasattr(self, "_forbidden_cache"):
+            return self._forbidden_cache
+
+        forbidden: set[int] = set(
+            getattr(self._tokenizer, "all_special_ids", []) or []
+        )
+        added = getattr(self._tokenizer, "added_tokens_encoder", None) or {}
+        forbidden.update(int(v) for v in added.values())
+
+        # Byte-fallback tokens: any vocab id whose isolated decoding
+        # contains the Unicode replacement char.
+        decode = getattr(self._tokenizer, "decode", None)
+        if decode is not None:
+            for tid in range(self.vocab_size):
+                if tid in forbidden:
+                    continue
+                try:
+                    s = decode([tid], skip_special_tokens=False)
+                except Exception:
+                    forbidden.add(tid)
+                    continue
+                if "�" in s:
+                    forbidden.add(tid)
+
+        self._forbidden_cache = list(forbidden)
+        return self._forbidden_cache
 
     def loss(
         self,

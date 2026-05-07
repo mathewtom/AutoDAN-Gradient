@@ -114,7 +114,7 @@ def main() -> int:
     parser.add_argument("--top-k", type=int, default=256)
     parser.add_argument("--batch", type=int, default=64)
     parser.add_argument("--suffix-len", type=int, default=20)
-    parser.add_argument("--lambda-readability", type=float, default=0.1)
+    parser.add_argument("--lambda-readability", type=float, default=0.3)
     parser.add_argument("--max-resamples", type=int, default=3)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--out", type=Path, required=True)

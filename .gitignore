@@ -24,3 +24,6 @@ Thumbs.db
 
 # stray data dirs (CWD-relative chromadb from dev misdirections)
 data/
+
+# debug runs; only canonical campaign artifacts get committed here
+results/scanner_evasion/smoke_*

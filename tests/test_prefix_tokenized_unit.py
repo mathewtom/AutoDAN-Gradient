@@ -1,44 +1,61 @@
 """Unit tests for `render_prefix_tokenized`. CPU only, stub tokenizer.
 
-Verifies the structural contract: tensor shapes, span arithmetic,
-determinism, and that the self-check fires on chat-template drift.
-The hardcoded Llama 3.1 segment correctness is verified against the
-real tokenizer in a separate RUN_LLAMA-gated integration test.
+The real Llama 3.1 tokenizer's chat template + offset mapping is
+exercised in a RUN_LLAMA-gated integration test (forthcoming). These
+tests verify the structural contract: tensor shapes, span arithmetic,
+determinism, and the BPE-boundary-misalignment failure mode.
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 import torch
 
-from surrogate.fitness import prefix_tokenized as pt_mod
 from surrogate.fitness.prefix_tokenized import (
     TokenizedPrefix,
     render_prefix_tokenized,
 )
 
 
-class StubTokenizer:
-    """Char-per-token stub. `apply_chat_template` reuses the function-
-    under-test's segment constants so the self-check passes by
-    construction in non-drift tests; `broken_template=True` injects a
-    drift to exercise the failure path."""
+class _StubBatchEncoding(dict):
+    """Mimics HF BatchEncoding's dict + attribute access."""
 
-    def __init__(self, *, broken_template: bool = False) -> None:
-        self.broken_template = broken_template
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as exc:  # pragma: no cover
+            raise AttributeError(name) from exc
+
+
+class StubTokenizer:
+    """Char-per-token tokenizer with offset_mapping support.
+
+    `apply_chat_template` produces a string with explicit role markers
+    and the user content embedded verbatim, which lets us locate the
+    seed prefix and target by `text.index`."""
+
+    SYS_OPEN = "<<SYS>>"
+    SYS_CLOSE = "<</SYS>>"
+    USER_OPEN = "<<USER>>"
+    USER_CLOSE = "<</USER>>"
+    ASST_OPEN = "<<ASST>>"
+    ASST_CLOSE = "<</ASST>>"
 
     def __call__(
         self, text: str, *,
         add_special_tokens: bool = True,
+        return_offsets_mapping: bool = False,
         return_tensors: str | None = None,
     ):
         del add_special_tokens
         ids = torch.tensor([[ord(c) for c in text]], dtype=torch.long)
-        if return_tensors == "pt":
-            return SimpleNamespace(input_ids=ids)
-        return SimpleNamespace(input_ids=ids[0].tolist())
+        offsets = torch.tensor(
+            [[(i, i + 1) for i in range(len(text))]], dtype=torch.long,
+        )
+        result: dict = {"input_ids": ids}
+        if return_offsets_mapping:
+            result["offset_mapping"] = offsets
+        return _StubBatchEncoding(result)
 
     def decode(self, ids, *, skip_special_tokens: bool = False) -> str:
         del skip_special_tokens
@@ -52,27 +69,23 @@ class StubTokenizer:
         tokenize: bool = True,
         add_generation_prompt: bool = False,
     ):
-        del tools
-        s = pt_mod._BOS
+        del tools, add_generation_prompt, tokenize
+        parts = []
         for m in messages:
-            if m["role"] == "system":
-                s += pt_mod._SYSTEM_HEADER + m["content"]
-            elif m["role"] == "user":
-                s += pt_mod._EOT + pt_mod._USER_HEADER + m["content"]
-            elif m["role"] == "assistant":
-                s += pt_mod._EOT + pt_mod._ASSISTANT_HEADER + m["content"]
+            role = m["role"]
+            content = m["content"]
+            if role == "system":
+                parts.append(f"{self.SYS_OPEN}{content}{self.SYS_CLOSE}")
+            elif role == "user":
+                parts.append(f"{self.USER_OPEN}{content}{self.USER_CLOSE}")
+            elif role == "assistant":
+                parts.append(f"{self.ASST_OPEN}{content}{self.ASST_CLOSE}")
             else:  # pragma: no cover
-                raise ValueError(f"unknown role {m['role']!r}")
-        if add_generation_prompt:
-            s += pt_mod._EOT + pt_mod._ASSISTANT_HEADER
-        if self.broken_template:
-            s = s.replace(pt_mod._BOS, pt_mod._BOS + " ")
-        if tokenize:
-            return [ord(c) for c in s]
-        return s
+                raise ValueError(role)
+        return "".join(parts)
 
 
-_FAKE_SYSTEM = "SYS"
+_FAKE_SYSTEM = "SYS_CONTENT"
 _FAKE_SEED = "Hello,"
 _FAKE_TARGET = "WORLD"
 _SUFFIX_LEN = 5
@@ -98,7 +111,9 @@ def test_basic_shape():
         assert isinstance(t, torch.Tensor)
         assert t.dim() == 1
         assert t.dtype == torch.long
-    expected_suffix_text = " " + ("! " * _SUFFIX_LEN)
+    expected_suffix_text = (" !") * _SUFFIX_LEN
+    # In the char-per-token stub, suffix length in tokens equals length
+    # of the suffix-init text in characters.
     assert out.suffix_init_ids.shape[0] == len(expected_suffix_text)
 
 
@@ -126,26 +141,26 @@ def test_determinism():
     assert a.target_span == b.target_span
 
 
-def test_self_check_fires_on_template_drift():
-    with pytest.raises(RuntimeError, match="self-check failed"):
+def test_seed_collision_with_template_raises():
+    """If the seed_prefix appears more than once in the rendered text
+    (e.g. it accidentally collides with system content), we cannot
+    safely slice. Surface the ambiguity loudly."""
+    with pytest.raises(RuntimeError, match="appears .* times"):
         render_prefix_tokenized(
-            StubTokenizer(broken_template=True),
-            system_prompt=_FAKE_SYSTEM,
+            StubTokenizer(),
+            system_prompt="SYS_HAS_HelloDuplicate_Hello",
             tool_function_dicts=[],
-            seed_prefix=_FAKE_SEED,
+            seed_prefix="Hello",  # appears twice in system + once in user
             suffix_len=_SUFFIX_LEN,
             target_string=_FAKE_TARGET,
         )
 
 
-def test_empty_seed_is_allowed():
-    out = render_prefix_tokenized(
-        StubTokenizer(),
-        system_prompt=_FAKE_SYSTEM,
-        tool_function_dicts=[],
-        seed_prefix="",
-        suffix_len=_SUFFIX_LEN,
-        target_string=_FAKE_TARGET,
-    )
-    assert out.suffix_span[0] == out.prefix_ids.shape[0]
-    assert out.suffix_span[1] - out.suffix_span[0] == out.suffix_init_ids.shape[0]
+def test_decoded_suffix_round_trips_to_init_text():
+    """Decoding suffix_init_ids back to text should yield the exact
+    suffix-init string we asked for. The optimizer relies on this for
+    its `_decode_user_prompt` reconstruction."""
+    out = _build()
+    decoded = StubTokenizer().decode(out.suffix_init_ids)
+    expected = (" !") * _SUFFIX_LEN
+    assert decoded == expected

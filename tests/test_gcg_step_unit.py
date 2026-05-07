@@ -204,6 +204,46 @@ def test_step_resamples_when_first_batch_all_blocked():
     assert len(result.candidates) > 0
 
 
+def test_step_masks_special_tokens_from_topk():
+    """Special tokens (BOS, EOS, EOT, header markers) must never appear
+    in any sampled candidate. A special token mid-suffix would break
+    the chat-template structure."""
+
+    class _StubTokenizerWithSpecials:
+        # IDs the GCG step must never propose. Chosen outside the init
+        # suffix's token IDs so the test sees only NEW selections.
+        # `all_special_ids` covers the named ones (BOS/EOS/EOT);
+        # `added_tokens_encoder` covers the reserved-special-token
+        # range — the property unions both, so we exercise both paths.
+        all_special_ids = [50, 51]
+        added_tokens_encoder = {
+            "<reserved_52>": 52,
+            "<reserved_53>": 53,
+            "<reserved_54>": 54,
+            "<reserved_55>": 55,
+        }
+
+    model = _tiny_model()
+    prefix = _hand_built_prefix()
+    obj = AutoDANObjective(model, tokenizer=_StubTokenizerWithSpecials())
+    step = GCGStep(obj, GCGStepConfig(top_k=8, batch_size=16))
+
+    result = step.step(prefix.suffix_init_ids, prefix)
+
+    # Each candidate differs from init at exactly one position. The
+    # *swapped* token at that position must not be a forbidden id.
+    forbidden = set(_StubTokenizerWithSpecials.all_special_ids) | set(
+        _StubTokenizerWithSpecials.added_tokens_encoder.values()
+    )
+    base = prefix.suffix_init_ids.tolist()
+    for _, suffix_ids in result.candidates:
+        for pos, tok in enumerate(suffix_ids.tolist()):
+            if tok != base[pos]:  # the swapped position
+                assert tok not in forbidden, (
+                    f"swap proposed forbidden special token id {tok}"
+                )
+
+
 def test_step_returns_empty_when_all_resamples_exhausted():
     """When is_blocked rejects every candidate across all resample
     attempts, the step returns an empty candidate list."""

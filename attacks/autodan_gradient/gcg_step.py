@@ -98,6 +98,14 @@ class GCGStep:
         grad[torch.arange(suffix_len, device=device),
              current_suffix_ids.to(device)] = float("inf")
 
+        # Mask special tokens (BOS, EOS, EOT, header markers, etc.) at
+        # every suffix position. A special token mid-suffix would break
+        # the chat-template structure and make the model see a malformed
+        # sequence.
+        forbidden = self._objective.forbidden_token_ids
+        if forbidden:
+            grad[:, forbidden] = float("inf")
+
         top_k = min(self._config.top_k, vocab_size)
         topk_token_ids = (-grad).topk(k=top_k, dim=-1).indices
 

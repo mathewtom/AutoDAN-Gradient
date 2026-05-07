@@ -1,20 +1,23 @@
 """Tokenized chat-template builder for the AutoDAN-Gradient optimizer.
 
-Companion to `prefix.py` (which returns a rendered string for eval-time
-scoring). This module returns token IDs split into four named regions
-plus the integer offsets of the mutable region within the concatenated
-sequence:
+Companion to `prefix.py` (which returns the rendered string for eval-
+time scoring). This module returns token IDs split into four named
+regions plus the integer offsets of the mutable suffix region within
+the concatenated full sequence:
 
     [ prefix_ids | suffix_ids | post_suffix_ids | target_ids ]
                        ▲
                        optimizer rewrites this every step
 
-The hardcoded segment strings below are Llama 3.1's chat template. A
-self-check at the bottom of `render_prefix_tokenized` verifies the
-hand-assembled token stream matches what `tokenizer.apply_chat_template`
-would produce for the equivalent message list — if Meta updates the
-template in a future tokenizer release, the check raises rather than
-silently shifting gradient positions.
+We render the chat template via the tokenizer's own
+`apply_chat_template` (with tools), then locate the suffix and target
+regions in the resulting token stream by matching character offsets.
+This handles arbitrary template content — including the Llama 3.1
+`# Tool Instructions` preamble and function-definition block — without
+having to hand-assemble it.
+
+Requires a "fast" HuggingFace tokenizer (PreTrainedTokenizerFast)
+that supports `return_offsets_mapping`.
 """
 
 from __future__ import annotations
@@ -23,13 +26,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
-
-
-_BOS = "<|begin_of_text|>"
-_EOT = "<|eot_id|>"
-_SYSTEM_HEADER = "<|start_header_id|>system<|end_header_id|>\n\n"
-_USER_HEADER = "<|start_header_id|>user<|end_header_id|>\n\n"
-_ASSISTANT_HEADER = "<|start_header_id|>assistant<|end_header_id|>\n\n"
 
 
 @dataclass
@@ -65,127 +61,141 @@ def render_prefix_tokenized(
     suffix_init_token: str = "!",
     device: torch.device | str = "cpu",
 ) -> TokenizedPrefix:
-    """Build the four-region tokenized prefix for one campaign run.
+    """Build the four-region tokenized prefix.
 
-    `seed_prefix` anchors the suffix semantically; passing `""` is
-    allowed. `suffix_init_token` defaults to `"!"` per the GCG paper
-    convention (single neutral BPE token, scanner-safe).
+    The rendered template's character positions for the seed prefix and
+    target string are mapped to token indices via the tokenizer's
+    offset-mapping. Slicing those positions yields the four regions.
 
     Raises
     ------
     RuntimeError
-        If the assembled segments do not produce the same token IDs as
-        `tokenizer.apply_chat_template` for the equivalent messages.
-        Indicates the segment constants have drifted from the
-        tokenizer's official template.
+        If `seed_prefix` does not appear exactly once in the rendered
+        text, if `target_string` is missing, or if BPE merges across
+        the seed/suffix or suffix/post-suffix boundary in a way that
+        prevents clean slicing.
     """
-    def _encode(text: str) -> torch.Tensor:
-        # add_special_tokens=False prevents auto-injection of BOS/EOS
-        # mid-sequence when chunks are concatenated.
-        ids = tokenizer(
-            text, add_special_tokens=False, return_tensors="pt",
-        ).input_ids[0]
-        return ids.to(device)
+    # Pattern: " !" repeated. No trailing space — a trailing whitespace
+    # character would be tokenized together with the following
+    # `<|eot_id|>` special token, causing the suffix region to absorb
+    # the EOT into its tail.
+    suffix_init_text = (" " + suffix_init_token) * suffix_len
 
-    bos_ids = _encode(_BOS)
-    system_block_ids = _encode(_SYSTEM_HEADER + system_prompt)
-    user_header_ids = _encode(_EOT + _USER_HEADER)
-    seed_ids = (
-        _encode(seed_prefix) if seed_prefix
-        else torch.empty((0,), dtype=torch.long, device=device)
-    )
-    # Leading space matters in BPE: the first suffix token must look
-    # space-prefixed since it's appended after the seed.
-    suffix_init_ids = _encode(" " + (suffix_init_token + " ") * suffix_len)
-    post_suffix_ids = _encode(_EOT + _ASSISTANT_HEADER)
-    target_ids = _encode(target_string)
-
-    prefix_ids = torch.cat(
-        [bos_ids, system_block_ids, user_header_ids, seed_ids], dim=0,
+    text = tokenizer.apply_chat_template(
+        [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": seed_prefix + suffix_init_text},
+            {"role": "assistant", "content": target_string},
+        ],
+        tools=tool_function_dicts or None,
+        tokenize=False,
+        add_generation_prompt=False,
     )
 
-    suffix_start = int(prefix_ids.shape[0])
-    suffix_end = suffix_start + int(suffix_init_ids.shape[0])
-    target_start = suffix_end + int(post_suffix_ids.shape[0])
-    target_end = target_start + int(target_ids.shape[0])
-
-    _verify_against_apply_chat_template(
-        tokenizer=tokenizer,
-        system_prompt=system_prompt,
-        tool_function_dicts=tool_function_dicts,
-        seed_prefix=seed_prefix,
-        suffix_init_ids=suffix_init_ids,
-        target_ids=target_ids,
-        prefix_ids=prefix_ids,
-        post_suffix_ids=post_suffix_ids,
-        device=device,
+    encoding = tokenizer(
+        text,
+        add_special_tokens=False,
+        return_offsets_mapping=True,
+        return_tensors="pt",
     )
+    ids = encoding["input_ids"][0].to(device)
+    offsets_tensor = encoding["offset_mapping"][0]
+    offsets = [(int(s), int(e)) for s, e in offsets_tensor.tolist()]
+
+    # Locate the seed prefix in the rendered text. It should appear
+    # exactly once (inside the user message). If it appears 0 times the
+    # caller passed a malformed seed; if multiple, the seed collides
+    # with template content and we cannot safely slice.
+    if seed_prefix:
+        n_hits = text.count(seed_prefix)
+        if n_hits != 1:
+            raise RuntimeError(
+                f"seed_prefix appears {n_hits} times in the rendered "
+                "chat template (expected 1). The seed may collide with "
+                "system-prompt or tool-block content."
+            )
+        seed_start_char = text.index(seed_prefix)
+        seed_end_char = seed_start_char + len(seed_prefix)
+    else:
+        # Empty seed: locate the suffix init text directly.
+        if text.count(suffix_init_text) != 1:
+            raise RuntimeError(
+                "Empty seed_prefix and suffix_init_text is not unique "
+                "in the rendered template; cannot localize suffix region."
+            )
+        seed_end_char = text.index(suffix_init_text)
+
+    suffix_end_char = seed_end_char + len(suffix_init_text)
+
+    # Target appears at the assistant-message position (last occurrence
+    # in case the system prompt happens to mention it earlier).
+    target_start_char = text.rindex(target_string)
+    target_end_char = target_start_char + len(target_string)
+
+    suffix_token_start = _first_token_at_or_after(offsets, seed_end_char)
+    suffix_token_end = _first_token_at_or_after(offsets, suffix_end_char)
+    target_token_start = _first_token_at_or_after(offsets, target_start_char)
+    target_token_end = _first_token_at_or_after(offsets, target_end_char)
+
+    # Token boundaries must align with the seed/suffix boundary.
+    # If BPE merges the trailing seed char with the leading suffix space,
+    # the suffix-start token will begin BEFORE seed_end_char and we
+    # cannot cleanly slice. Surface this loudly rather than silently
+    # mis-aligning gradient positions.
+    if suffix_token_start >= len(offsets):
+        raise RuntimeError(
+            "suffix region falls past end of token stream; "
+            "rendered template likely truncated."
+        )
+    actual_start = offsets[suffix_token_start][0]
+    if actual_start != seed_end_char:
+        raise RuntimeError(
+            "Suffix region does not align with a token boundary. "
+            f"Expected token starting at char {seed_end_char}, found "
+            f"token starting at char {actual_start}. BPE merged across "
+            "the seed/suffix boundary. Pick a seed prefix that ends "
+            "in a clear word boundary (period, space, etc.)."
+        )
+
+    prefix_ids = ids[:suffix_token_start]
+    suffix_init_ids = ids[suffix_token_start:suffix_token_end]
+    post_suffix_ids = ids[suffix_token_end:target_token_start]
+    target_ids = ids[target_token_start:target_token_end]
+
+    # Defensive: suffix_init_ids must not contain any special or added
+    # token. A token like <|eot_id|> mid-suffix would break the chat-
+    # template structure and corrupt every downstream gradient signal.
+    forbidden: set[int] = set(
+        getattr(tokenizer, "all_special_ids", []) or []
+    )
+    added = getattr(tokenizer, "added_tokens_encoder", None) or {}
+    forbidden.update(int(v) for v in added.values())
+    bad = [int(t) for t in suffix_init_ids.tolist() if int(t) in forbidden]
+    if bad:
+        raise RuntimeError(
+            f"suffix_init_ids contains special/added token ids {bad}. "
+            "This indicates an offset-mapping boundary issue — the suffix "
+            "absorbed a chat-template special token. Inspect the trailing "
+            "characters of suffix_init_text."
+        )
 
     return TokenizedPrefix(
         prefix_ids=prefix_ids,
         suffix_init_ids=suffix_init_ids,
         post_suffix_ids=post_suffix_ids,
         target_ids=target_ids,
-        suffix_span=(suffix_start, suffix_end),
-        target_span=(target_start, target_end),
+        suffix_span=(int(suffix_token_start), int(suffix_token_end)),
+        target_span=(int(target_token_start), int(target_token_end)),
     )
 
 
-def _verify_against_apply_chat_template(
-    *,
-    tokenizer: Any,
-    system_prompt: str,
-    tool_function_dicts: list[dict],
-    seed_prefix: str,
-    suffix_init_ids: torch.Tensor,
-    target_ids: torch.Tensor,
-    prefix_ids: torch.Tensor,
-    post_suffix_ids: torch.Tensor,
-    device: torch.device | str,
-) -> None:
-    """Raise if our hand-assembled token IDs differ from what
-    `apply_chat_template` would produce for the equivalent message
-    list. Compares position-for-position; the error message includes
-    the first divergent index.
-    """
-    suffix_text = tokenizer.decode(suffix_init_ids, skip_special_tokens=False)
-    target_text = tokenizer.decode(target_ids, skip_special_tokens=False)
-    user_text = seed_prefix + suffix_text
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_text},
-        {"role": "assistant", "content": target_text},
-    ]
-    canonical_text = tokenizer.apply_chat_template(
-        messages,
-        tools=tool_function_dicts or None,
-        tokenize=False,
-        add_generation_prompt=False,
-    )
-    canonical_ids = tokenizer(
-        canonical_text, add_special_tokens=False, return_tensors="pt",
-    ).input_ids[0].to(device)
-
-    assembled = torch.cat(
-        [prefix_ids, suffix_init_ids, post_suffix_ids, target_ids], dim=0,
-    )
-
-    if assembled.shape != canonical_ids.shape or not torch.equal(
-        assembled, canonical_ids,
-    ):
-        common_len = min(assembled.shape[0], canonical_ids.shape[0])
-        first_diff = next(
-            (i for i in range(common_len)
-             if int(assembled[i]) != int(canonical_ids[i])),
-            None,
-        )
-        raise RuntimeError(
-            "prefix_tokenized self-check failed: hand-assembled segments "
-            "do not match tokenizer.apply_chat_template output. "
-            f"assembled.len={assembled.shape[0]} "
-            f"canonical.len={canonical_ids.shape[0]} "
-            f"first_diff_index={first_diff}. "
-            "The hardcoded chat-template segment constants have drifted "
-            "from the tokenizer's official template."
-        )
+def _first_token_at_or_after(
+    offsets: list[tuple[int, int]],
+    char_pos: int,
+) -> int:
+    """Index of the first token whose start char >= `char_pos`.
+    Returns `len(offsets)` if no such token exists."""
+    for i, (s, _e) in enumerate(offsets):
+        if s >= char_pos:
+            return i
+    return len(offsets)
