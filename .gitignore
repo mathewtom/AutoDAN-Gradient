@@ -14,10 +14,11 @@ __pycache__/
 */.env
 **/.env
 
-# IDE / OS
+# IDE / OS / harness config
 .idea/
 .vscode/
 .cursor/
+.claude/
 .DS_Store
 Thumbs.db
 
