@@ -114,6 +114,12 @@ def main() -> int:
     parser.add_argument("--top-k", type=int, default=256)
     parser.add_argument("--batch", type=int, default=64)
     parser.add_argument("--suffix-len", type=int, default=20)
+    parser.add_argument(
+        "--suffix-init-text", type=str, default=None,
+        help="Custom seed text for the suffix region (overrides the "
+             "default '!'-filler). Tokenizes to whatever count it "
+             "tokenizes to; --suffix-len is ignored if this is set.",
+    )
     parser.add_argument("--lambda-readability", type=float, default=0.3)
     parser.add_argument("--max-resamples", type=int, default=3)
     parser.add_argument("--seed", type=int, default=1)
@@ -153,6 +159,7 @@ def main() -> int:
         seed_prefix=seed_prefix,
         suffix_len=args.suffix_len,
         target_string=target_string,
+        suffix_init_text=args.suffix_init_text,
         device=adapter.surrogate.device,
     )
     print(

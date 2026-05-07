@@ -59,6 +59,7 @@ def render_prefix_tokenized(
     suffix_len: int,
     target_string: str,
     suffix_init_token: str = "!",
+    suffix_init_text: str | None = None,
     device: torch.device | str = "cpu",
 ) -> TokenizedPrefix:
     """Build the four-region tokenized prefix.
@@ -75,11 +76,14 @@ def render_prefix_tokenized(
         the seed/suffix or suffix/post-suffix boundary in a way that
         prevents clean slicing.
     """
-    # Pattern: " !" repeated. No trailing space — a trailing whitespace
-    # character would be tokenized together with the following
-    # `<|eot_id|>` special token, causing the suffix region to absorb
-    # the EOT into its tail.
-    suffix_init_text = (" " + suffix_init_token) * suffix_len
+    # If the caller passes biased seed text via `suffix_init_text`,
+    # use it directly (and let the resulting token count override
+    # `suffix_len`). Otherwise default to the neutral " !"-repeated
+    # pattern. No trailing space — a trailing whitespace character
+    # would be tokenized together with the following `<|eot_id|>`
+    # special token and cause the suffix region to absorb the EOT.
+    if suffix_init_text is None:
+        suffix_init_text = (" " + suffix_init_token) * suffix_len
 
     text = tokenizer.apply_chat_template(
         [
