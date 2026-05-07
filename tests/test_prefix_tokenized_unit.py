@@ -193,19 +193,22 @@ def test_seed_text_pads_with_filler_to_match_suffix_len():
     assert decoded == "ABC" + " !" * 2
 
 
-def test_seed_text_longer_than_suffix_len_raises():
-    """If the seed alone tokenizes to more than suffix_len, surface
-    loudly rather than truncating."""
-    with pytest.raises(RuntimeError, match="exceeds suffix_len"):
-        render_prefix_tokenized(
-            StubTokenizer(),
-            system_prompt=_FAKE_SYSTEM,
-            tool_function_dicts=[],
-            seed_prefix=_FAKE_SEED,
-            suffix_len=3,
-            target_string=_FAKE_TARGET,
-            suffix_init_text="ABCDEFG",   # 7 chars > suffix_len=3
-        )
+def test_seed_text_longer_than_suffix_len_passes_through():
+    """suffix_len is a MINIMUM slot count, not an exact target. A seed
+    longer than suffix_len passes through unchanged; the resulting
+    suffix region is as long as the seed tokenizes to."""
+    out = render_prefix_tokenized(
+        StubTokenizer(),
+        system_prompt=_FAKE_SYSTEM,
+        tool_function_dicts=[],
+        seed_prefix=_FAKE_SEED,
+        suffix_len=3,
+        target_string=_FAKE_TARGET,
+        suffix_init_text="ABCDEFG",   # 7 tokens > suffix_len=3
+    )
+    assert out.suffix_init_ids.shape[0] == 7
+    decoded = StubTokenizer().decode(out.suffix_init_ids)
+    assert decoded == "ABCDEFG"
 
 
 def test_decoded_suffix_round_trips_to_init_text():

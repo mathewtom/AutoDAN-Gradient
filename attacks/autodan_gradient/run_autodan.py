@@ -117,8 +117,10 @@ def main() -> int:
     parser.add_argument(
         "--suffix-init-text", type=str, default=None,
         help="Custom seed text for the suffix region (overrides the "
-             "default '!'-filler). Tokenizes to whatever count it "
-             "tokenizes to; --suffix-len is ignored if this is set.",
+             "default '!'-filler). --suffix-len floors the slot count: "
+             "shorter seeds are padded with ' !' filler up to suffix_len; "
+             "longer seeds pass through as-is and the slot count becomes "
+             "whatever they tokenize to.",
     )
     parser.add_argument("--lambda-readability", type=float, default=0.3)
     parser.add_argument("--max-resamples", type=int, default=3)

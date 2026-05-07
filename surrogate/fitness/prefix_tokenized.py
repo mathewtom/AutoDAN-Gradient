@@ -229,16 +229,20 @@ def _pad_seed_to_length(
     target_string: str,
     max_attempts: int = 8,
 ) -> str:
-    """Append " !" filler to `seed_text` until it tokenizes to exactly
-    `target_token_count` tokens in the suffix region of the rendered
-    chat template.
+    """Append " !" filler to `seed_text` until it tokenizes to AT
+    LEAST `target_token_count` tokens in the suffix region of the
+    rendered chat template.
+
+    `target_token_count` is treated as a MINIMUM, not an exact target:
+      - seed shorter than target → pad with " !" filler up to target
+      - seed at or over target   → return as-is (no padding, no error)
 
     Iterates because BPE tokenization is context-sensitive: appending
     one " !" doesn't always add exactly one token (boundary merges).
     Converges within a handful of attempts in practice.
 
-    Raises RuntimeError if the seed alone exceeds `target_token_count`,
-    or if padding fails to converge within `max_attempts` iterations.
+    Raises RuntimeError if padding fails to converge within
+    `max_attempts` iterations.
     """
     candidate = seed_text
     for _ in range(max_attempts):
@@ -250,14 +254,9 @@ def _pad_seed_to_length(
             tool_function_dicts=tool_function_dicts,
             target_string=target_string,
         )
-        if actual == target_token_count:
+        if actual >= target_token_count:
+            # Minimum met — return as-is, even if we overshot.
             return candidate
-        if actual > target_token_count:
-            raise RuntimeError(
-                f"seed text tokenizes to {actual} tokens, which exceeds "
-                f"suffix_len={target_token_count}. Pick a shorter seed "
-                "or raise --suffix-len."
-            )
         deficit = target_token_count - actual
         candidate = candidate + (" !" * deficit)
     raise RuntimeError(

@@ -319,7 +319,10 @@ something different, prefer this list.
 - **Seed**: the initial value of the optimizable region at step 0 —
   what the optimizer starts mutating from. Default is `" !"`
   repeated `suffix_len` times. Override via `--suffix-init-text`
-  with biased starting text.
+  with biased starting text. `--suffix-len` floors the slot count:
+  shorter seeds are padded with `" !"` filler up to `suffix_len`,
+  longer seeds pass through as-is and the slot count becomes whatever
+  they tokenize to.
 - **Suffix**: the optimizable region itself, the tokens GCG edits
   each step. Identical to *seed* at step 0; diverges as the
   optimizer accepts swaps.
