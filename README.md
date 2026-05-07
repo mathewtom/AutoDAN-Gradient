@@ -7,9 +7,12 @@ surrogate to optimize user prompts that bypass the production regex
 scanner, then transfer the survivors to the live agent (Llama 3.3 70B) and
 read the audit log to attribute defensive coverage layer by layer.
 
-Status — repository skeleton in place. Optimizer module stubbed; fitness
-primitives and seed corpora ported from the sibling `AutoDAN-HGA` lab.
-First gradient run is the next step.
+Status — the differentiable objective, the GCG inner step, and the
+500-step outer loop are implemented and unit-tested on a synthetic
+GPT-2 in CPU. The CLI in `attacks/autodan_gradient/run_autodan.py`
+glues the pieces together against the live 8B; the first Campaign A
+run is pending. Fitness primitives and seed corpora carry over from
+the sibling `AutoDAN-HGA` lab unchanged.
 
 The scanner pattern catalog the search routes around lives in
 [docs/securerag_regex_inventory.md](docs/securerag_regex_inventory.md).
@@ -191,17 +194,38 @@ autodan-gradient/
 │   ├── chat_adapter.py               BaseChatModel wrapper
 │   └── fitness/
 │       ├── log_prob.py               target log-probability primitive
-│       ├── prefix.py                 chat-template construction
+│       ├── prefix.py                 chat-template string rendering
+│       ├── prefix_tokenized.py       tokenized prefix + region offsets
 │       ├── normalize.py              sigmoid normalization
 │       └── system_prompt_leak.py     SystemPromptLeakFitness (eval-time)
 ├── attacks/autodan_gradient/
-│   ├── objective.py                  differentiable leak+readability loss
-│   ├── optimizer.py                  GCG-style coord descent + scanner guard
+│   ├── objective.py                  differentiable leak + readability loss
+│   ├── gcg_step.py                   one-step coordinate descent + scanner pre-filter
+│   ├── optimizer.py                  outer loop + JSONL writer
 │   └── run_autodan.py                CLI + FITNESS_REGISTRY
 ├── seeds/                            starting prompts (per campaign)
+├── tests/                            unit + integration tests
 ├── scripts/
 │   └── transfer_test_top5.py         live-service transfer harness
 └── results/scanner_evasion/          per-campaign JSONL + transfer artifacts
+```
+
+Build dependencies between the attack modules:
+
+```
+prefix_tokenized.py
+        │
+        ▼
+   objective.py  ◄──────  loss() and score_batch() consume prefix
+        │
+        ▼
+   gcg_step.py  ───  one Phase-A gradient + Phase-B sample/filter/score
+        │
+        ▼
+   optimizer.py  ───  500-step outer loop + InjectionScanner pre-filter callable
+        │
+        ▼
+   run_autodan.py  ───  glues the surrogate, fitness, scanner, and optimizer
 ```
 
 ---
@@ -220,6 +244,15 @@ uv run python -m attacks.autodan_gradient.run_autodan \
     --out results/scanner_evasion/verbatim_$(date +%Y%m%d_%H%M).jsonl
 ```
 
+Useful flags beyond the defaults:
+
+| flag | default | meaning |
+|---|---|---|
+| `--suffix-len` | 20 | optimizable token region length |
+| `--lambda-readability` | 0.1 | weight on the readability term in the loss |
+| `--max-resamples` | 3 | extra sampling tries when the pre-filter blocks every candidate in a step |
+| `--seed` | 1 | RNG seed for reproducible candidate sampling |
+
 Transfer the top-5 to a running SecureRAG-Agent (same harness as HGA —
 JSONL contract is shared):
 
@@ -236,18 +269,18 @@ uv run python scripts/transfer_test_top5.py \
 
 ## Tests
 
-Unit tests cover the fitness primitives, the SystemPromptLeakFitness
-module, and prefix construction — all carried over from the HGA lab
-unchanged because they test infrastructure shared across both attack
-methods. Integration tests are gated behind `RUN_8B=1` because they load
-the 8B.
+49 unit tests cover the fitness primitives, the tokenized-prefix
+self-check, the differentiable objective and its batched no-grad
+scorer, the GCG step (gradient ranking, candidate sampling, scanner
+pre-filter, resample-on-bust), and the optimizer (top-N maintenance,
+JSONL contract, all-blocked path). The optimizer-side tests run on a
+synthetic GPT-2 in CPU and finish in under two seconds. Integration
+tests that load the real 8B are gated behind `RUN_8B=1`.
 
 ```bash
-uv run pytest                  # unit only, ~1s
+uv run pytest                  # unit only, ~2s
 RUN_8B=1 uv run pytest         # unit + integration, ~25s
 ```
-
-Optimizer-side tests will land alongside the optimizer implementation.
 
 ---
 

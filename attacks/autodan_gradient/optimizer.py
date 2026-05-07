@@ -1,55 +1,246 @@
-"""GCG-style coordinate-descent optimizer with readability + scanner guard.
+"""AutoDAN-Gradient outer loop: scanner-vetoed coordinate descent.
 
-Per Zhu et al. (AutoDAN, 2023), each step:
-
-  1. Compute one-hot embedding gradients of `loss` w.r.t. the candidate
-     token positions.
-  2. Take top-K candidate replacements per position via
-     `gather_gradient_topk(grads, k=K)`.
-  3. Sample a batch of single-token swaps from the top-K set and score
-     each candidate's full loss with a forward pass.
-  4. Apply the best-loss candidate that ALSO passes the scanner-evasion
-     guard (`InjectionScanner.scan(decoded_prompt).total_score < 5`).
-     Candidates that would be blocked are filtered out before argmin.
-
-The scanner guard makes the optimization a constrained search: gradient
-points the way, but candidates that step over the regex line are rejected
-even if their gradient-aligned loss is lower. This is the gradient analog
-of HGA's multiplicative tier composition — the scanner is a hard veto, not
-a smooth penalty.
+Drives the campaign:
+  - calls `GCGStep` with an `is_blocked` callable so the scanner veto
+    runs BEFORE the batched forward pass, eliminating wasted compute
+    on doomed candidates,
+  - takes the lowest-loss survivor from the GCG step's sorted output,
+  - evaluates eval-time fitness on each accepted swap,
+  - maintains a running top-N best-fitness list,
+  - emits one JSONL line per step matching the transfer-harness
+    contract (`{"step": N, "best_fitness": ..., "top5": [...]}`).
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
+
+import torch
+
+from attacks.autodan_gradient.gcg_step import GCGStep
+from surrogate.fitness.prefix_tokenized import TokenizedPrefix
 
 
 @dataclass
 class OptimizerConfig:
     n_steps: int = 500
-    top_k: int = 256
-    batch_size: int = 64
-    suffix_len: int = 20
-    seed: int = 1
+    scanner_threshold: int = 5
+    top_n_tracked: int = 5
+
+
+@dataclass
+class TopNEntry:
+    prompt: str
+    fitness: float
+    step_added: int
+
+
+@dataclass
+class RunSummary:
+    n_steps: int
+    n_accepted: int
+    n_all_blocked: int
+    best_fitness: float
+    best_prompt: str
+    final_suffix_ids: list[int]
 
 
 class AutoDANOptimizer:
-    """Coordinate-descent optimization of the adversarial prompt's tokens
-    under a leak+readability loss with a scanner-evasion hard constraint.
+    """500-step outer loop wrapping `GCGStep` with scanner pre-filter
+    + JSONL.
 
-    The optimizer wraps an `AutoDANObjective` (differentiable loss) and a
-    `SystemPromptLeakFitness` (the eval-time fitness, used as the scanner
-    guard and as the JSONL-logged metric).
+    The evaluator must be a callable `user_prompt -> dict` returning at
+    minimum a `fitness` field; the standard production binding is
+    `SystemPromptLeakFitness.evaluate`. Tests pass a stub.
     """
 
-    def __init__(self, objective: Any, evaluator: Any, config: OptimizerConfig):
-        self._objective = objective
+    def __init__(
+        self,
+        gcg_step: GCGStep,
+        evaluator: Callable[[str], dict],
+        scanner: Any,
+        tokenizer: Any,
+        seed_prefix: str,
+        config: OptimizerConfig | None = None,
+    ) -> None:
+        self._gcg_step = gcg_step
         self._evaluator = evaluator
-        self._config = config
+        self._scanner = scanner
+        self._tokenizer = tokenizer
+        self._seed_prefix = seed_prefix
+        self._config = config or OptimizerConfig()
 
-    def run(self, starting_prompt: str):
-        raise NotImplementedError(
-            "AutoDAN-Gradient optimizer not yet implemented. "
-            "See README §'Methodology' for the planned step shape."
+    def run(
+        self,
+        prefix: TokenizedPrefix,
+        jsonl_path: Path,
+    ) -> RunSummary:
+        jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+        current_suffix_ids = prefix.suffix_init_ids.detach().clone()
+
+        top_n: list[TopNEntry] = []
+        n_accepted = 0
+        n_all_blocked = 0
+
+        with jsonl_path.open("w") as fh:
+            for step_idx in range(1, self._config.n_steps + 1):
+                step_result = self._gcg_step.step(
+                    current_suffix_ids, prefix,
+                    is_blocked=self._is_blocked,
+                )
+
+                if not step_result.candidates:
+                    # Pre-filter eliminated every candidate across all
+                    # resample attempts. Keep the suffix unchanged and
+                    # log the stuck step.
+                    n_all_blocked += 1
+                    user_prompt = self._decode_user_prompt(current_suffix_ids)
+                    eval_diag = self._evaluator(user_prompt)
+                    self._maybe_insert_top_n(
+                        top_n, user_prompt, float(eval_diag["fitness"]),
+                        step_idx,
+                    )
+                    self._write_jsonl_line(
+                        fh=fh,
+                        step=step_idx,
+                        accepted=False,
+                        accepted_loss=None,
+                        gradient_loss=step_result.gradient_loss,
+                        gradient_diagnostics=step_result.gradient_diagnostics,
+                        eval_diagnostics=eval_diag,
+                        accepted_prompt=user_prompt,
+                        survivor_count=0,
+                        top_n=top_n,
+                    )
+                    continue
+
+                # GCG step pre-filtered — every entry is scanner-safe.
+                # Take the lowest-loss survivor.
+                accepted_loss, accepted_suffix = step_result.candidates[0]
+                current_suffix_ids = accepted_suffix
+                n_accepted += 1
+
+                user_prompt = self._decode_user_prompt(current_suffix_ids)
+                eval_diag = self._evaluator(user_prompt)
+                self._maybe_insert_top_n(
+                    top_n, user_prompt, float(eval_diag["fitness"]),
+                    step_idx,
+                )
+                self._write_jsonl_line(
+                    fh=fh,
+                    step=step_idx,
+                    accepted=True,
+                    accepted_loss=accepted_loss,
+                    gradient_loss=step_result.gradient_loss,
+                    gradient_diagnostics=step_result.gradient_diagnostics,
+                    eval_diagnostics=eval_diag,
+                    accepted_prompt=user_prompt,
+                    survivor_count=len(step_result.candidates),
+                    top_n=top_n,
+                )
+
+        best = top_n[0] if top_n else TopNEntry(
+            prompt="", fitness=0.0, step_added=0,
         )
+        return RunSummary(
+            n_steps=self._config.n_steps,
+            n_accepted=n_accepted,
+            n_all_blocked=n_all_blocked,
+            best_fitness=best.fitness,
+            best_prompt=best.prompt,
+            final_suffix_ids=current_suffix_ids.tolist(),
+        )
+
+    def _is_blocked(self, suffix_ids: torch.Tensor) -> bool:
+        """Decode and run the scanner. Wraps the production
+        `InjectionScanner.scan` so the GCG step can pre-filter its
+        own candidate batch before the forward pass."""
+        user_prompt = self._decode_user_prompt(suffix_ids)
+        return (
+            self._scanner.scan(user_prompt).total_score
+            >= self._config.scanner_threshold
+        )
+
+    def _decode_user_prompt(self, suffix_ids: torch.Tensor) -> str:
+        suffix_text = self._tokenizer.decode(
+            suffix_ids, skip_special_tokens=False,
+        )
+        return self._seed_prefix + suffix_text
+
+    def _maybe_insert_top_n(
+        self,
+        top_n: list[TopNEntry],
+        prompt: str,
+        fitness: float,
+        step: int,
+    ) -> None:
+        existing = next(
+            (e for e in top_n if e.prompt == prompt), None,
+        )
+        if existing is not None:
+            if fitness > existing.fitness:
+                existing.fitness = fitness
+                existing.step_added = step
+                top_n.sort(key=lambda e: e.fitness, reverse=True)
+            return
+
+        if len(top_n) < self._config.top_n_tracked:
+            top_n.append(TopNEntry(
+                prompt=prompt, fitness=fitness, step_added=step,
+            ))
+            top_n.sort(key=lambda e: e.fitness, reverse=True)
+            return
+
+        if fitness > top_n[-1].fitness:
+            top_n[-1] = TopNEntry(
+                prompt=prompt, fitness=fitness, step_added=step,
+            )
+            top_n.sort(key=lambda e: e.fitness, reverse=True)
+
+    def _write_jsonl_line(
+        self,
+        *,
+        fh: Any,
+        step: int,
+        accepted: bool,
+        accepted_loss: float | None,
+        gradient_loss: float,
+        gradient_diagnostics: dict,
+        eval_diagnostics: dict,
+        accepted_prompt: str,
+        survivor_count: int,
+        top_n: list[TopNEntry],
+    ) -> None:
+        record = {
+            "step": step,
+            "accepted": accepted,
+            "accepted_loss": accepted_loss,
+            "gradient_loss": gradient_loss,
+            "leak_log_prob": gradient_diagnostics.get("leak_log_prob"),
+            "readability_log_prob": gradient_diagnostics.get(
+                "readability_log_prob",
+            ),
+            "lambda_readability": gradient_diagnostics.get(
+                "lambda_readability",
+            ),
+            "best_fitness": top_n[0].fitness if top_n else 0.0,
+            "scanner_score": eval_diagnostics.get("scanner_score"),
+            "leak_score": eval_diagnostics.get("leak_score"),
+            "evasion_score": eval_diagnostics.get("evasion_score"),
+            "fitness": eval_diagnostics.get("fitness"),
+            "survivor_count": survivor_count,
+            "accepted_prompt": accepted_prompt,
+            "top5": [
+                {
+                    "prompt": e.prompt,
+                    "fitness": e.fitness,
+                    "step_added": e.step_added,
+                }
+                for e in top_n
+            ],
+        }
+        fh.write(json.dumps(record) + "\n")
+        fh.flush()

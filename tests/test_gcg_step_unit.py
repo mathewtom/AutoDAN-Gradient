@@ -1,9 +1,9 @@
 """Unit tests for `GCGStep` and `AutoDANObjective.score_batch`.
 
 CPU only, synthetic tiny GPT-2. Verifies score_batch matches per-
-sample loss(), that step() returns the right number of single-swap
-candidates sorted by loss ascending, and that seeded sampling is
-reproducible.
+sample loss(), step() returns single-swap candidates sorted by loss
+ascending, the optional `is_blocked` pre-filter works, the resample-
+on-bust loop kicks in, and seeded sampling is reproducible.
 """
 
 from __future__ import annotations
@@ -56,9 +56,6 @@ def _one_hot(ids: torch.Tensor, vocab: int) -> torch.Tensor:
 
 
 def test_score_batch_matches_per_sample_loss():
-    """Batched non-grad scorer must agree numerically with the
-    autograd loss; otherwise the GCG step samples under one cost
-    model and ranks under another."""
     model = _tiny_model()
     prefix = _hand_built_prefix()
     obj = AutoDANObjective(
@@ -79,7 +76,7 @@ def test_score_batch_matches_per_sample_loss():
     assert torch.allclose(losses[1], loss_b.detach(), rtol=1e-4, atol=1e-4)
 
 
-def test_step_returns_batch_size_candidates():
+def test_step_returns_batch_size_candidates_when_no_filter():
     model = _tiny_model()
     prefix = _hand_built_prefix()
     obj = AutoDANObjective(model, tokenizer=None)
@@ -96,8 +93,6 @@ def test_step_returns_batch_size_candidates():
 
 
 def test_step_candidates_differ_at_exactly_one_position():
-    """One-swap-per-step: zero or two-position diffs would mean the
-    masking-out-current-token logic broke."""
     model = _tiny_model()
     prefix = _hand_built_prefix()
     obj = AutoDANObjective(model, tokenizer=None)
@@ -159,3 +154,70 @@ def test_step_is_reproducible_with_seeded_generator():
     for (l1, s1), (l2, s2) in zip(r1.candidates, r2.candidates):
         assert l1 == l2
         assert torch.equal(s1, s2)
+
+
+# ----------------------------------------------------------------------
+# Pre-filter (is_blocked) behaviour
+# ----------------------------------------------------------------------
+
+
+def test_step_filters_with_is_blocked_callable():
+    """is_blocked drops candidates BEFORE the forward pass. The
+    returned set should contain none of the blocked candidates."""
+    model = _tiny_model()
+    prefix = _hand_built_prefix()
+    obj = AutoDANObjective(model, tokenizer=None)
+    step = GCGStep(obj, GCGStepConfig(top_k=8, batch_size=16))
+
+    # Block all candidates whose first token is even.
+    def is_blocked(suffix: torch.Tensor) -> bool:
+        return int(suffix[0].item()) % 2 == 0
+
+    result = step.step(prefix.suffix_init_ids, prefix, is_blocked=is_blocked)
+
+    # Every survivor must satisfy the negation of is_blocked.
+    assert len(result.candidates) > 0
+    for _, suffix_ids in result.candidates:
+        assert int(suffix_ids[0].item()) % 2 != 0
+
+
+def test_step_resamples_when_first_batch_all_blocked():
+    """If is_blocked rejects the first batch but accepts a second,
+    the step should still return survivors thanks to resampling."""
+    model = _tiny_model()
+    prefix = _hand_built_prefix()
+    obj = AutoDANObjective(model, tokenizer=None)
+    step = GCGStep(obj, GCGStepConfig(
+        top_k=8, batch_size=4, max_resamples=5,
+    ))
+
+    call_count = [0]
+
+    def is_blocked(suffix: torch.Tensor) -> bool:
+        # Block everything in the first batch (call count 1..batch),
+        # then accept everything afterwards.
+        call_count[0] += 1
+        return call_count[0] <= 4  # batch_size=4
+
+    result = step.step(prefix.suffix_init_ids, prefix, is_blocked=is_blocked)
+
+    assert len(result.candidates) > 0
+
+
+def test_step_returns_empty_when_all_resamples_exhausted():
+    """When is_blocked rejects every candidate across all resample
+    attempts, the step returns an empty candidate list."""
+    model = _tiny_model()
+    prefix = _hand_built_prefix()
+    obj = AutoDANObjective(model, tokenizer=None)
+    step = GCGStep(obj, GCGStepConfig(
+        top_k=8, batch_size=4, max_resamples=2,
+    ))
+
+    def is_blocked(suffix: torch.Tensor) -> bool:
+        return True  # block everything, always
+
+    result = step.step(prefix.suffix_init_ids, prefix, is_blocked=is_blocked)
+    assert result.candidates == []
+    # Diagnostics still populated even on full bust.
+    assert isinstance(result.gradient_loss, float)
