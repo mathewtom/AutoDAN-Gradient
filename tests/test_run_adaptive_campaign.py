@@ -469,3 +469,33 @@ def test_load_config_default_replacement_cap_is_six(
     path = _write_yaml(tmp_path, cfg)
     config = orch.load_config(path)
     assert config.replacement_cap == 6
+
+
+def test_planned_replacement_fallback_jsonls_persist_independently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each phase writes its own JSONL — replacement does not truncate
+    the planned run's data, fallback does not truncate either."""
+    repo_root = _stage_repo(tmp_path, monkeypatch)
+    cfg_dict = _make_config_dict(
+        repo_root, planned_ids=["p1"], pool_ids=["r1"],
+    )
+    cfg_path = _write_yaml(tmp_path, cfg_dict)
+    _install_fake_runner(
+        monkeypatch,
+        abandon_for={"p1": [True, True, False], "r1": [True]},
+        fitness_for={"p1": [0.003, 0.001, 0.5], "r1": [0.001]},
+    )
+    config = orch.load_config(cfg_path)
+    state = orch.orchestrate(config, dry_run=False, with_transfer=False)
+
+    files = sorted(p.name for p in config.output_dir.glob("*.jsonl"))
+    # Planned p1, replacement r1 (slot p1), fallback on the least-bad
+    # abandoned slot (p1) — three distinct files.
+    assert len(files) == 3, f"expected 3 files, got: {files}"
+    assert any("planned" in f and "_p1_" in f for f in files)
+    assert any("replacement_r1" in f for f in files)
+    assert any("fallback" in f for f in files)
+    # All three outcomes recorded.
+    phases = sorted(o.phase for o in state.outcomes)
+    assert phases == ["FALLBACK", "PLANNED", "REPLACEMENT"]

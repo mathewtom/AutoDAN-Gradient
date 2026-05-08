@@ -160,12 +160,21 @@ def load_config(path: Path) -> CampaignConfig:
 
 
 def jsonl_path_for(
-    config: CampaignConfig, slot_id: str, timestamp: str,
+    config: CampaignConfig,
+    slot_id: str,
+    timestamp: str,
+    *,
+    phase: str,
+    pool_id: str | None = None,
 ) -> Path:
-    return (
-        config.output_dir
-        / f"{config.campaign_id}_{slot_id}_{timestamp}.jsonl"
-    )
+    """Each (slot, phase, pool) tuple writes to its own file. PLANNED
+    runs and the FALLBACK re-run of the same slot would otherwise share
+    a path and the second writer would truncate the first."""
+    parts = [config.campaign_id, slot_id, phase.lower()]
+    if pool_id and pool_id != slot_id:
+        parts.append(pool_id)
+    parts.append(timestamp)
+    return config.output_dir / ("_".join(parts) + ".jsonl")
 
 
 def parse_jsonl_outcome(jsonl_path: Path) -> tuple[bool, float, int | None]:
@@ -251,8 +260,11 @@ def execute_run(
     timestamp: str,
     pool_id: str | None = None,
 ) -> RunOutcome:
-    out_path = jsonl_path_for(config, spec.slot_id, timestamp)
     label = pool_id or spec.slot_id
+    out_path = jsonl_path_for(
+        config, spec.slot_id, timestamp,
+        phase=phase, pool_id=label,
+    )
     print(
         f"\n===== {phase} run {spec.slot_id} (pool={label}, "
         f"abandon={'on' if abandon_enabled else 'off'}) =====",
@@ -405,7 +417,7 @@ def run_fallback_phase(
     fallback_outcome = execute_run(
         config, matching_spec, phase="FALLBACK",
         abandon_enabled=False,
-        dry_run=dry_run, timestamp=timestamp + "_fallback",
+        dry_run=dry_run, timestamp=timestamp,
         pool_id=candidate.pool_id,
     )
     state.outcomes.append(fallback_outcome)
