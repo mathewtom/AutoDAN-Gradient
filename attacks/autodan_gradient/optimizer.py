@@ -29,6 +29,13 @@ class OptimizerConfig:
     n_steps: int = 500
     scanner_threshold: int = 5
     top_n_tracked: int = 5
+    # Early-abandon (opt-in): at step >= abandon_after_steps, if
+    # best_fitness has not climbed past EITHER absolute_floor OR
+    # (step_1_fitness × min_improvement_ratio), abort the run. Set
+    # `abandon_after_steps` to 0 (default) to disable.
+    abandon_after_steps: int = 0
+    abandon_absolute_floor: float = 0.005
+    abandon_min_improvement_ratio: float = 1.5
 
 
 @dataclass
@@ -46,6 +53,9 @@ class RunSummary:
     best_fitness: float
     best_prompt: str
     final_suffix_ids: list[int]
+    abandoned: bool = False
+    abandoned_at_step: int | None = None
+    abandon_reason: str | None = None
 
 
 class AutoDANOptimizer:
@@ -84,6 +94,10 @@ class AutoDANOptimizer:
         top_n: list[TopNEntry] = []
         n_accepted = 0
         n_all_blocked = 0
+        step_1_fitness: float | None = None
+        abandoned = False
+        abandoned_at_step: int | None = None
+        abandon_reason: str | None = None
 
         with jsonl_path.open("w") as fh:
             for step_idx in range(1, self._config.n_steps + 1):
@@ -142,16 +156,58 @@ class AutoDANOptimizer:
                     top_n=top_n,
                 )
 
+                # Capture step-1 fitness as the baseline for relative
+                # improvement detection.
+                if step_idx == 1:
+                    step_1_fitness = top_n[0].fitness if top_n else 0.0
+
+                # Early-abandon check.
+                if (
+                    self._config.abandon_after_steps > 0
+                    and step_idx >= self._config.abandon_after_steps
+                    and not abandoned
+                ):
+                    best_so_far = top_n[0].fitness if top_n else 0.0
+                    floor = self._config.abandon_absolute_floor
+                    ratio = self._config.abandon_min_improvement_ratio
+                    rel_target = (step_1_fitness or 0.0) * ratio
+                    productive = (
+                        best_so_far >= floor
+                        or best_so_far >= rel_target
+                    )
+                    if not productive:
+                        abandoned = True
+                        abandoned_at_step = step_idx
+                        abandon_reason = (
+                            f"best_fitness={best_so_far:.4f} below floor "
+                            f"{floor:.4f} and below "
+                            f"{ratio:.1f}× step_1_fitness "
+                            f"({rel_target:.4f}) at step {step_idx}"
+                        )
+                        # Write a final marker line for downstream tools.
+                        fh.write(
+                            "{"
+                            f'"abandoned": true, '
+                            f'"abandoned_at_step": {step_idx}, '
+                            f'"abandon_reason": "{abandon_reason}"'
+                            "}\n"
+                        )
+                        fh.flush()
+                        break
+
         best = top_n[0] if top_n else TopNEntry(
             prompt="", fitness=0.0, step_added=0,
         )
         return RunSummary(
-            n_steps=self._config.n_steps,
+            n_steps=(abandoned_at_step or self._config.n_steps),
             n_accepted=n_accepted,
             n_all_blocked=n_all_blocked,
             best_fitness=best.fitness,
             best_prompt=best.prompt,
             final_suffix_ids=current_suffix_ids.tolist(),
+            abandoned=abandoned,
+            abandoned_at_step=abandoned_at_step,
+            abandon_reason=abandon_reason,
         )
 
     def _is_blocked(self, suffix_ids: torch.Tensor) -> bool:

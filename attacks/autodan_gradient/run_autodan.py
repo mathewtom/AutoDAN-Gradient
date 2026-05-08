@@ -136,6 +136,25 @@ def main() -> int:
     )
     parser.add_argument("--lambda-readability", type=float, default=0.3)
     parser.add_argument("--max-resamples", type=int, default=3)
+    parser.add_argument(
+        "--abandon-after-steps", type=int, default=0,
+        help="Abandon a run early if best_fitness has not climbed past "
+             "either the absolute floor or N× step_1_fitness by this "
+             "step. Default 0 (disabled). 30 is a reasonable production "
+             "value (~30 minutes of MPS compute).",
+    )
+    parser.add_argument(
+        "--abandon-absolute-floor", type=float, default=0.005,
+        help="Absolute fitness floor for the abandon check. If "
+             "best_fitness >= this, the run continues regardless. "
+             "Default 0.005.",
+    )
+    parser.add_argument(
+        "--abandon-min-improvement-ratio", type=float, default=1.5,
+        help="Relative improvement floor. If best_fitness >= this × "
+             "step_1_fitness, the run continues. Default 1.5 (50% "
+             "improvement over the cold-start fitness).",
+    )
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
@@ -215,6 +234,9 @@ def main() -> int:
         config=OptimizerConfig(
             n_steps=args.steps,
             scanner_threshold=_PRODUCTION_THRESHOLD,
+            abandon_after_steps=args.abandon_after_steps,
+            abandon_absolute_floor=args.abandon_absolute_floor,
+            abandon_min_improvement_ratio=args.abandon_min_improvement_ratio,
         ),
     )
 
@@ -223,6 +245,12 @@ def main() -> int:
     summary = optimizer.run(prefix, args.out)
 
     print("\n=== AutoDAN run summary ===", flush=True)
+    if summary.abandoned:
+        print(
+            f"ABANDONED at step {summary.abandoned_at_step}: "
+            f"{summary.abandon_reason}",
+            flush=True,
+        )
     print(f"Steps:           {summary.n_steps}", flush=True)
     print(f"  accepted:      {summary.n_accepted}", flush=True)
     print(f"  all-blocked:   {summary.n_all_blocked}", flush=True)

@@ -195,6 +195,76 @@ def test_run_handles_all_blocked_step(tmp_path: Path):
         assert line["survivor_count"] == 0
 
 
+def test_run_abandons_when_below_floor_and_no_relative_improvement(tmp_path: Path):
+    """If fitness stays below the absolute floor AND below the relative
+    improvement target after abandon_after_steps, the run should exit
+    early and mark the summary as abandoned."""
+    model = _tiny_model()
+    obj = AutoDANObjective(model, tokenizer=None,
+                           config=ObjectiveConfig(lambda_readability=0.1))
+    gcg = GCGStep(obj, GCGStepConfig(top_k=8, batch_size=8, max_resamples=2))
+    scanner = StubScanner(blocked_substrings=None)
+    tokenizer = StubTokenizer()
+    # Stub evaluator that returns a constant low fitness so neither
+    # the floor nor the relative-improvement signal can ever fire.
+    def stuck_evaluator(prompt: str) -> dict:
+        return {"fitness": 0.0001, "scanner_score": 0,
+                "leak_score": 0.001, "evasion_score": 1.0}
+    config = OptimizerConfig(
+        n_steps=20,
+        abandon_after_steps=3,
+        abandon_absolute_floor=0.005,
+        abandon_min_improvement_ratio=1.5,
+    )
+    opt = AutoDANOptimizer(
+        gcg_step=gcg, evaluator=stuck_evaluator, scanner=scanner,
+        tokenizer=tokenizer, seed_prefix="hi",
+        config=config,
+    )
+    prefix = _hand_built_prefix()
+    out = tmp_path / "abandon.jsonl"
+    summary = opt.run(prefix, out)
+
+    assert summary.abandoned is True
+    assert summary.abandoned_at_step == 3
+    assert "below floor" in (summary.abandon_reason or "")
+    assert summary.n_steps == 3   # n_steps reflects the abandonment step
+    # Final JSONL line should carry the abandon marker.
+    lines = [l for l in out.read_text().splitlines() if l.strip()]
+    last = json.loads(lines[-1])
+    assert last.get("abandoned") is True
+
+
+def test_run_continues_if_above_floor(tmp_path: Path):
+    """If best_fitness stays above the absolute floor, abandonment
+    must not fire even when the relative-improvement signal would
+    not be met."""
+    model = _tiny_model()
+    obj = AutoDANObjective(model, tokenizer=None,
+                           config=ObjectiveConfig(lambda_readability=0.1))
+    gcg = GCGStep(obj, GCGStepConfig(top_k=8, batch_size=8, max_resamples=2))
+    scanner = StubScanner(blocked_substrings=None)
+    tokenizer = StubTokenizer()
+    # Constant fitness above the absolute floor — should not abandon.
+    def healthy_evaluator(prompt: str) -> dict:
+        return {"fitness": 0.05, "scanner_score": 0,
+                "leak_score": 0.05, "evasion_score": 1.0}
+    config = OptimizerConfig(
+        n_steps=5,
+        abandon_after_steps=3,
+        abandon_absolute_floor=0.005,
+        abandon_min_improvement_ratio=1.5,
+    )
+    opt = AutoDANOptimizer(
+        gcg_step=gcg, evaluator=healthy_evaluator, scanner=scanner,
+        tokenizer=tokenizer, seed_prefix="hi",
+        config=config,
+    )
+    summary = opt.run(_hand_built_prefix(), tmp_path / "healthy.jsonl")
+    assert summary.abandoned is False
+    assert summary.n_steps == 5
+
+
 def test_run_smoke_end_to_end(tmp_path: Path):
     """Tiny end-to-end run. No blocking — every step accepts."""
     opt, call_log = _build_optimizer(n_steps=3)
