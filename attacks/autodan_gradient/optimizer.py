@@ -171,18 +171,22 @@ class AutoDANOptimizer:
                     floor = self._config.abandon_absolute_floor
                     ratio = self._config.abandon_min_improvement_ratio
                     rel_target = (step_1_fitness or 0.0) * ratio
+                    # AND-logic: both signals must say productive.
+                    # Above the absolute floor AND climbing meaningfully
+                    # over the cold-start fitness. Either failing means
+                    # the basin isn't doing what we want.
                     productive = (
                         best_so_far >= floor
-                        or best_so_far >= rel_target
+                        and best_so_far >= rel_target
                     )
                     if not productive:
                         abandoned = True
                         abandoned_at_step = step_idx
                         abandon_reason = (
-                            f"best_fitness={best_so_far:.4f} below floor "
-                            f"{floor:.4f} and below "
-                            f"{ratio:.1f}× step_1_fitness "
-                            f"({rel_target:.4f}) at step {step_idx}"
+                            f"best_fitness={best_so_far:.4f} fails "
+                            f"floor={floor:.4f} or "
+                            f"{ratio:.1f}×step_1 ({rel_target:.4f}) "
+                            f"at step {step_idx}"
                         )
                         # Write a final marker line for downstream tools.
                         fh.write(

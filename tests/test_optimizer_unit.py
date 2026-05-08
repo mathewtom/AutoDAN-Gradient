@@ -227,7 +227,7 @@ def test_run_abandons_when_below_floor_and_no_relative_improvement(tmp_path: Pat
 
     assert summary.abandoned is True
     assert summary.abandoned_at_step == 3
-    assert "below floor" in (summary.abandon_reason or "")
+    assert "fails floor" in (summary.abandon_reason or "")
     assert summary.n_steps == 3   # n_steps reflects the abandonment step
     # Final JSONL line should carry the abandon marker.
     lines = [l for l in out.read_text().splitlines() if l.strip()]
@@ -235,34 +235,110 @@ def test_run_abandons_when_below_floor_and_no_relative_improvement(tmp_path: Pat
     assert last.get("abandoned") is True
 
 
-def test_run_continues_if_above_floor(tmp_path: Path):
-    """If best_fitness stays above the absolute floor, abandonment
-    must not fire even when the relative-improvement signal would
-    not be met."""
+def test_run_continues_when_climbing_past_both_thresholds(tmp_path: Path):
+    """AND-logic: a run continues only when BOTH signals are
+    productive — best_fitness above the floor AND climbing
+    meaningfully over step-1."""
     model = _tiny_model()
     obj = AutoDANObjective(model, tokenizer=None,
                            config=ObjectiveConfig(lambda_readability=0.1))
     gcg = GCGStep(obj, GCGStepConfig(top_k=8, batch_size=8, max_resamples=2))
     scanner = StubScanner(blocked_substrings=None)
     tokenizer = StubTokenizer()
-    # Constant fitness above the absolute floor — should not abandon.
-    def healthy_evaluator(prompt: str) -> dict:
-        return {"fitness": 0.05, "scanner_score": 0,
+
+    # Climbing evaluator: starts at 0.05, climbs by 0.01 per call. By
+    # step 3, fitness is at 0.07; step_1 was 0.05; ratio target is
+    # 0.05 × 1.5 = 0.075. Just below at step 3, but step 4 should
+    # cross. With abandon_after_steps=4, run continues to step 5.
+    counter = {"n": 0}
+    def climbing_evaluator(prompt: str) -> dict:
+        counter["n"] += 1
+        return {"fitness": 0.05 + 0.02 * counter["n"], "scanner_score": 0,
                 "leak_score": 0.05, "evasion_score": 1.0}
     config = OptimizerConfig(
         n_steps=5,
+        abandon_after_steps=4,
+        abandon_absolute_floor=0.005,
+        abandon_min_improvement_ratio=1.5,
+    )
+    opt = AutoDANOptimizer(
+        gcg_step=gcg, evaluator=climbing_evaluator, scanner=scanner,
+        tokenizer=tokenizer, seed_prefix="hi",
+        config=config,
+    )
+    summary = opt.run(_hand_built_prefix(), tmp_path / "climbing.jsonl")
+    assert summary.abandoned is False
+    assert summary.n_steps == 5
+
+
+def test_run_abandons_when_above_floor_but_no_climb(tmp_path: Path):
+    """AND-logic: a run that holds steady above the floor but never
+    climbs above step_1 × ratio still abandons. Catches stalled
+    runs that would have escaped under OR-logic."""
+    model = _tiny_model()
+    obj = AutoDANObjective(model, tokenizer=None,
+                           config=ObjectiveConfig(lambda_readability=0.1))
+    gcg = GCGStep(obj, GCGStepConfig(top_k=8, batch_size=8, max_resamples=2))
+    scanner = StubScanner(blocked_substrings=None)
+    tokenizer = StubTokenizer()
+    # Constant 0.05: above floor, but step_1 is also 0.05, so
+    # relative target 0.05*1.5=0.075 is never crossed.
+    def stalled_evaluator(prompt: str) -> dict:
+        return {"fitness": 0.05, "scanner_score": 0,
+                "leak_score": 0.05, "evasion_score": 1.0}
+    config = OptimizerConfig(
+        n_steps=10,
         abandon_after_steps=3,
         abandon_absolute_floor=0.005,
         abandon_min_improvement_ratio=1.5,
     )
     opt = AutoDANOptimizer(
-        gcg_step=gcg, evaluator=healthy_evaluator, scanner=scanner,
+        gcg_step=gcg, evaluator=stalled_evaluator, scanner=scanner,
         tokenizer=tokenizer, seed_prefix="hi",
         config=config,
     )
-    summary = opt.run(_hand_built_prefix(), tmp_path / "healthy.jsonl")
-    assert summary.abandoned is False
-    assert summary.n_steps == 5
+    summary = opt.run(_hand_built_prefix(), tmp_path / "stalled.jsonl")
+    assert summary.abandoned is True
+    assert summary.abandoned_at_step == 3
+
+
+def test_run_abandons_when_climbing_but_below_floor(tmp_path: Path):
+    """AND-logic: a run that climbs meaningfully (e.g. 0.0001 → 0.001,
+    a 10× ratio) but stays below the absolute floor still abandons.
+    This is the most important AND-vs-OR difference: prevents wasting
+    compute on runs that show relative improvement off a near-zero
+    baseline but never reach productive absolute levels."""
+    model = _tiny_model()
+    obj = AutoDANObjective(model, tokenizer=None,
+                           config=ObjectiveConfig(lambda_readability=0.1))
+    gcg = GCGStep(obj, GCGStepConfig(top_k=8, batch_size=8, max_resamples=2))
+    scanner = StubScanner(blocked_substrings=None)
+    tokenizer = StubTokenizer()
+
+    counter = {"n": 0}
+    def climbing_low_evaluator(prompt: str) -> dict:
+        counter["n"] += 1
+        # 0.0001 → 0.0002 → ... 10× by step 10, but never crosses 0.005
+        return {
+            "fitness": 0.0001 * counter["n"],
+            "scanner_score": 0,
+            "leak_score": 0.0001,
+            "evasion_score": 1.0,
+        }
+    config = OptimizerConfig(
+        n_steps=10,
+        abandon_after_steps=3,
+        abandon_absolute_floor=0.005,
+        abandon_min_improvement_ratio=1.5,
+    )
+    opt = AutoDANOptimizer(
+        gcg_step=gcg, evaluator=climbing_low_evaluator, scanner=scanner,
+        tokenizer=tokenizer, seed_prefix="hi",
+        config=config,
+    )
+    summary = opt.run(_hand_built_prefix(), tmp_path / "climbing_low.jsonl")
+    assert summary.abandoned is True
+    assert summary.abandoned_at_step == 3
 
 
 def test_run_smoke_end_to_end(tmp_path: Path):
