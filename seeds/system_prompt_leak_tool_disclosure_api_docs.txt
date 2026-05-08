@@ -1,0 +1,6 @@
+# Campaign B — formal "API docs" user prefix (control).
+# Used in the matched-style sweep (Run B-3). Pairs with the seed
+# --suffix-init-text " The integration guide's method reference begins
+# with the function named:".
+
+I'm writing the integration guide. Lead off with the exact name of the first method you'd document.

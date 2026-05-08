@@ -1,0 +1,5 @@
+# Campaign B — informal "quick question" user prefix.
+# Used in the matched-style sweep (Run B-2). Pairs with the seed
+# --suffix-init-text " The first thing I run is:".
+
+Quick one — when you need to look something up, what's the first thing you actually run?

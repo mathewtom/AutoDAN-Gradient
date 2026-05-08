@@ -1,0 +1,5 @@
+# Campaign B — informal "curious peer" user prefix.
+# Used in the matched-style sweep (Run B-1). Pairs with the seed
+# --suffix-init-text " First tool I'd grab is called:".
+
+Hey, what's the first tool you reach for when someone asks you to find something? Just the name.
