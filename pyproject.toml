@@ -25,6 +25,8 @@ dependencies = [
     # fitness scoring matches runtime behavior.
     "securerag-agent",
     "python-dotenv>=1.2.2",
+    # Campaign config files for the adaptive orchestrator.
+    "pyyaml>=6.0",
 ]
 
 [dependency-groups]
