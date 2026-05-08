@@ -82,6 +82,10 @@ FITNESS_REGISTRY = {
         "surrogate.fitness.system_prompt_leak", "build_fitness",
         {"target_string": "my system prompt"},
     ),
+    "system_prompt_leak_meta_instructions": (
+        "surrogate.fitness.system_prompt_leak", "build_fitness",
+        {"target_string": "my instructions"},
+    ),
 }
 
 
