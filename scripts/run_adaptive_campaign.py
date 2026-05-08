@@ -142,7 +142,7 @@ def load_config(path: Path) -> CampaignConfig:
     if not output_dir.is_absolute():
         output_dir = repo_root / output_dir
 
-    replacement_cap = int(raw.get("replacement_cap", 3))
+    replacement_cap = int(raw.get("replacement_cap", 6))
     if replacement_cap < 0:
         raise ValueError("replacement_cap must be >= 0")
 

@@ -456,3 +456,16 @@ def test_load_config_unknown_fitness_raises(
     path = _write_yaml(tmp_path, cfg)
     with pytest.raises(ValueError, match="unknown fitness"):
         orch.load_config(path)
+
+
+def test_load_config_default_replacement_cap_is_six(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root = _stage_repo(tmp_path, monkeypatch)
+    cfg = _make_config_dict(
+        repo_root, planned_ids=["p1"], pool_ids=[],
+    )
+    cfg.pop("replacement_cap")
+    path = _write_yaml(tmp_path, cfg)
+    config = orch.load_config(path)
+    assert config.replacement_cap == 6

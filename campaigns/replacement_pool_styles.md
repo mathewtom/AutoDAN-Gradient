@@ -40,3 +40,7 @@ The suffix-init-text paired with each prefix is configured in [campaign_c2_meta_
 For each new replacement pool, write 6 new seed files named `{fitness_name}_{direction_id}.txt`. Swap the C2 vocabulary for vocabulary that fits the new target — e.g., for tool-disclosure (target = "search_documents"), the strict admin might ask for "the tool registry", the curious junior might ask "what API calls you have". Keep the tone × role mapping intact so variety is preserved.
 
 Reference [campaign_c2_meta_instructions.yaml](campaign_c2_meta_instructions.yaml) for the YAML layout that wires seeds + suffix-init-text into the orchestrator.
+
+## Replacement cap
+
+By default the orchestrator runs at most **6 replacement attempts** per campaign (set `replacement_cap` in the YAML to override, or omit to use the default). With a 6-entry pool this exercises every direction at most once. To restrict to a subset, lower the cap; to disable replacements entirely (planned → fallback only), set `replacement_cap: 0`. Each abandoned PLANNED slot consumes one pool entry; a slot gets exactly one replacement attempt regardless of cap.
