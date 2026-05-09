@@ -1,0 +1,5 @@
+# Campaign C3 — formal "docs control" user prefix.
+# Targets "busy placeholder". Pairs with seed --suffix-init-text
+# " In our docs, that representation is called a:".
+
+For the integrations documentation, what is the official term used for a calendar event returned with timing-only fields and no subject?

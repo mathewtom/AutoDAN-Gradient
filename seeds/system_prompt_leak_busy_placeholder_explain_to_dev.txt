@@ -1,0 +1,5 @@
+# Campaign C3 — informal "explain to dev" user prefix.
+# Targets "busy placeholder". Pairs with seed --suffix-init-text
+# " The API returns what's called a:".
+
+I'm wiring up a calendar widget. When the caller isn't an attendee, what's the term for the limited-info entry the API returns?

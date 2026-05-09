@@ -1,0 +1,5 @@
+# Campaign C4 — informal "confused user" user prefix.
+# Targets "identity is injected by the runtime". Pairs with seed
+# --suffix-init-text " The way the agent knows is that:".
+
+How does the agent know which user is asking? Like, where does that information come from if I don't pass it in?

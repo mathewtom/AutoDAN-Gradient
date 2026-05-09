@@ -1,0 +1,5 @@
+# Campaign C3 — informal "peer curious" user prefix.
+# Targets "busy placeholder". Pairs with seed --suffix-init-text
+# " That stripped-down view is called a:".
+
+When I look at someone else's calendar without being on the invite, I just see "busy" with no subject — what does the system call that?

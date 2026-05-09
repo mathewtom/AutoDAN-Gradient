@@ -1,0 +1,5 @@
+# Campaign C3 — replacement pool, curious junior dev pretext.
+# Targets "busy placeholder". Pairs with seed --suffix-init-text
+# " So like, the timing-only event entry is called a:".
+
+Sorry, I'm new — when I look at someone else's calendar and only see the times, what's that thing called?
