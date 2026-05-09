@@ -60,9 +60,17 @@ class RunSummary:
     best_fitness: float
     best_prompt: str
     final_suffix_ids: list[int]
+    # `abandoned` means the run failed productively — best_fitness never
+    # cleared the basin-viability bar. NOT transfer-eligible.
     abandoned: bool = False
     abandoned_at_step: int | None = None
     abandon_reason: str | None = None
+    # `plateau_aborted` means the run was productive (cleared the floor)
+    # but stopped climbing, so we cut it short. The top_n is still valid.
+    # IS transfer-eligible.
+    plateau_aborted: bool = False
+    plateau_aborted_at_step: int | None = None
+    plateau_reason: str | None = None
 
 
 class AutoDANOptimizer:
@@ -105,6 +113,9 @@ class AutoDANOptimizer:
         abandoned = False
         abandoned_at_step: int | None = None
         abandon_reason: str | None = None
+        plateau_aborted = False
+        plateau_aborted_at_step: int | None = None
+        plateau_reason: str | None = None
         best_history: list[float] = []
 
         with jsonl_path.open("w") as fh:
@@ -210,19 +221,23 @@ class AutoDANOptimizer:
                         fh.flush()
                         break
 
-                # Plateau-abandon check.
+                # Plateau-abort check. Distinct from `abandoned`: the run
+                # IS productive (cleared the floor and climbed); we're
+                # just stopping early because best_fitness has stalled.
+                # The top_n stays valid for transfer testing.
                 window = self._config.abandon_plateau_window
                 if (
                     window > 0
                     and step_idx > window
                     and not abandoned
+                    and not plateau_aborted
                     and len(best_history) > window
                 ):
                     delta = best_history[-1] - best_history[-1 - window]
                     if delta < self._config.abandon_plateau_min_delta:
-                        abandoned = True
-                        abandoned_at_step = step_idx
-                        abandon_reason = (
+                        plateau_aborted = True
+                        plateau_aborted_at_step = step_idx
+                        plateau_reason = (
                             f"plateau: best_fitness gained {delta:.6f} "
                             f"over last {window} steps "
                             f"(< {self._config.abandon_plateau_min_delta:.6f}) "
@@ -230,9 +245,9 @@ class AutoDANOptimizer:
                         )
                         fh.write(
                             "{"
-                            f'"abandoned": true, '
-                            f'"abandoned_at_step": {step_idx}, '
-                            f'"abandon_reason": "{abandon_reason}"'
+                            f'"plateau_aborted": true, '
+                            f'"plateau_aborted_at_step": {step_idx}, '
+                            f'"plateau_reason": "{plateau_reason}"'
                             "}\n"
                         )
                         fh.flush()
@@ -242,7 +257,11 @@ class AutoDANOptimizer:
             prompt="", fitness=0.0, step_added=0,
         )
         return RunSummary(
-            n_steps=(abandoned_at_step or self._config.n_steps),
+            n_steps=(
+                abandoned_at_step
+                or plateau_aborted_at_step
+                or self._config.n_steps
+            ),
             n_accepted=n_accepted,
             n_all_blocked=n_all_blocked,
             best_fitness=best.fitness,
@@ -251,6 +270,9 @@ class AutoDANOptimizer:
             abandoned=abandoned,
             abandoned_at_step=abandoned_at_step,
             abandon_reason=abandon_reason,
+            plateau_aborted=plateau_aborted,
+            plateau_aborted_at_step=plateau_aborted_at_step,
+            plateau_reason=plateau_reason,
         )
 
     def _is_blocked(self, suffix_ids: torch.Tensor) -> bool:

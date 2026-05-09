@@ -360,9 +360,10 @@ def test_run_smoke_end_to_end(tmp_path: Path):
         assert line["survivor_count"] > 0
 
 
-def test_run_abandons_on_plateau_above_floor(tmp_path: Path):
-    """Plateau-abandon: a productive run that clears the floor but
-    stalls should be aborted by the plateau guard."""
+def test_run_plateau_aborts_when_stuck_above_floor(tmp_path: Path):
+    """Plateau-abort: a productive run that clears the floor but stalls
+    should be stopped early. NOT marked as `abandoned` — the run is
+    transfer-eligible."""
     model = _tiny_model()
     obj = AutoDANObjective(model, tokenizer=None,
                            config=ObjectiveConfig(lambda_readability=0.1))
@@ -383,7 +384,6 @@ def test_run_abandons_on_plateau_above_floor(tmp_path: Path):
                 "leak_score": f, "evasion_score": 1.0}
     config = OptimizerConfig(
         n_steps=20,
-        # Disable floor abandon so plateau is the only signal.
         abandon_after_steps=0,
         abandon_plateau_window=3,
         abandon_plateau_min_delta=0.001,
@@ -395,14 +395,17 @@ def test_run_abandons_on_plateau_above_floor(tmp_path: Path):
     )
     out = tmp_path / "plateau.jsonl"
     summary = opt.run(_hand_built_prefix(), out)
-    assert summary.abandoned is True
-    # First step where step > window AND best stable for window steps:
-    # window=3 → step 4 reads best_history[3] - best_history[0] = 0.10 -
-    # 0.05 = 0.05 (not flat). Step 5 reads [4]-[1] = 0.10-0.10 = 0.0.
-    assert summary.abandoned_at_step == 5
-    assert "plateau" in (summary.abandon_reason or "")
+    assert summary.abandoned is False
+    assert summary.plateau_aborted is True
+    # window=3 → step 4 reads best_history[3] - best_history[0] = 0.10
+    # - 0.05 = 0.05 (not flat). Step 5 reads [4]-[1] = 0.10-0.10 = 0.0.
+    assert summary.plateau_aborted_at_step == 5
+    assert "plateau" in (summary.plateau_reason or "")
     last = json.loads(out.read_text().splitlines()[-1])
-    assert last.get("abandoned") is True
+    # Marker uses `plateau_aborted`, NOT `abandoned`, so the orchestrator
+    # treats this run as successful + transfer-eligible.
+    assert last.get("plateau_aborted") is True
+    assert last.get("abandoned") is None
 
 
 def test_run_continues_when_still_climbing(tmp_path: Path):

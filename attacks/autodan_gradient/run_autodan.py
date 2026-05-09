@@ -286,6 +286,13 @@ def main() -> int:
             f"{summary.abandon_reason}",
             flush=True,
         )
+    elif summary.plateau_aborted:
+        print(
+            f"PLATEAU-ABORTED at step {summary.plateau_aborted_at_step} "
+            f"(productive, transfer-eligible): "
+            f"{summary.plateau_reason}",
+            flush=True,
+        )
     print(f"Steps:           {summary.n_steps}", flush=True)
     print(f"  accepted:      {summary.n_accepted}", flush=True)
     print(f"  all-blocked:   {summary.n_all_blocked}", flush=True)
