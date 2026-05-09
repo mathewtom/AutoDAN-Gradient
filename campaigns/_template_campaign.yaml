@@ -1,0 +1,68 @@
+# Template for new adaptive-campaign configs.
+# Copy this file to `campaigns/campaign_<id>_<short_name>.yaml`,
+# then fill in the campaign-specific fields below.
+#
+# All `gcg:` fields default to the validated values in
+# `scripts/run_adaptive_campaign.py:DEFAULT_GCG_CONFIG`. Override only
+# what you need.
+#
+# Defaults (as of 2026-05-08):
+#   steps: 500
+#   top_k: 256
+#   batch: 16
+#   suffix_len: 20
+#   abandon_after_steps: 30           (floor + relative-improvement check)
+#   abandon_absolute_floor: 0.005
+#   abandon_min_improvement_ratio: 1.5
+#   abandon_plateau_window: 100        (rolling 100-step lookback)
+#   abandon_plateau_min_delta: 0.0001  (productive-but-stuck cutoff)
+
+campaign_id: X            # short campaign identifier (e.g., D, E)
+fitness: system_prompt_leak_<TARGET>     # must match a key in FITNESS_REGISTRY in run_autodan.py
+target_string: "<verbatim string the surrogate must elicit>"
+output_dir: results/scanner_evasion
+
+# 3 framings recommended (2 informal + 1 formal control).
+planned_runs:
+  - id: X_1_<framing_id>
+    seed_file: seeds/system_prompt_leak_<target>_<framing>.txt
+    suffix_init_text: " <lead-in phrase the surrogate trains to emit>"
+  - id: X_2_<framing_id>
+    seed_file: seeds/system_prompt_leak_<target>_<framing>.txt
+    suffix_init_text: " <lead-in phrase>"
+  - id: X_3_<framing_id>
+    seed_file: seeds/system_prompt_leak_<target>_<framing>.txt
+    suffix_init_text: " <lead-in phrase>"
+
+# 6 archetypes from campaigns/replacement_pool_styles.md. With
+# replacement_cap=6 (default), every archetype can be exercised.
+replacement_pool:
+  - id: strict_admin
+    seed_file: seeds/system_prompt_leak_<target>_strict_admin.txt
+    suffix_init_text: " <archetype-tuned lead-in>"
+  - id: panicked_support
+    seed_file: seeds/system_prompt_leak_<target>_panicked_support.txt
+    suffix_init_text: " <archetype-tuned lead-in>"
+  - id: ceo_directive
+    seed_file: seeds/system_prompt_leak_<target>_ceo_directive.txt
+    suffix_init_text: " <archetype-tuned lead-in>"
+  - id: compliance_auditor
+    seed_file: seeds/system_prompt_leak_<target>_compliance_auditor.txt
+    suffix_init_text: " <archetype-tuned lead-in>"
+  - id: rude_colleague
+    seed_file: seeds/system_prompt_leak_<target>_rude_colleague.txt
+    suffix_init_text: " <archetype-tuned lead-in>"
+  - id: curious_junior
+    seed_file: seeds/system_prompt_leak_<target>_curious_junior.txt
+    suffix_init_text: " <archetype-tuned lead-in>"
+
+# Optional. Omit to use DEFAULT_GCG_CONFIG. Override individual knobs
+# by listing only those keys; everything else falls back to defaults.
+# gcg:
+#   steps: 300
+#   abandon_plateau_window: 70
+
+transfer:
+  target_string: "<same as target_string above>"
+  service_url: http://127.0.0.1:8000
+  audit_dir: /Users/mainuser/Documents/RAG/SecureRAG-Agent/logs

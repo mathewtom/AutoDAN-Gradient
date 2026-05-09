@@ -44,3 +44,41 @@ Reference [campaign_c2_meta_instructions.yaml](campaign_c2_meta_instructions.yam
 ## Replacement cap
 
 By default the orchestrator runs at most **6 replacement attempts** per campaign (set `replacement_cap` in the YAML to override, or omit to use the default). With a 6-entry pool this exercises every direction at most once. To restrict to a subset, lower the cap; to disable replacements entirely (planned → fallback only), set `replacement_cap: 0`. Each abandoned PLANNED slot consumes one pool entry; a slot gets exactly one replacement attempt regardless of cap.
+
+## GCG defaults
+
+The orchestrator's `DEFAULT_GCG_CONFIG` (see [run_adaptive_campaign.py](../scripts/run_adaptive_campaign.py)) is the single source of truth for GCG and abandonment knobs. New campaign YAMLs can omit the entire `gcg:` block and inherit these. Override only the keys you need.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `steps` | 500 | Total GCG step budget per run (matches AutoDAN-Zhu paper). |
+| `top_k` | 256 | Top-k token candidates per slot per step. |
+| `batch` | 16 | Forward-pass batch size. |
+| `suffix_len` | 20 | Minimum suffix slot count (longer seed text passes through). |
+| `abandon_after_steps` | 30 | Step at which the floor + relative-improvement check fires. |
+| `abandon_absolute_floor` | 0.005 | Best-fitness floor; below this is treated as a dead basin. |
+| `abandon_min_improvement_ratio` | 1.5 | Best-fitness must climb to at least 1.5× step-1 fitness. |
+| `abandon_plateau_window` | 100 | Rolling lookback length for the plateau check. |
+| `abandon_plateau_min_delta` | 0.0001 | Below this delta over the lookback, plateau-abort fires. |
+
+## Run outcome categories
+
+Every GCG run ends in one of three states. Only the third counts as a true failure that triggers a replacement:
+
+| Outcome | `abandoned` flag | Transfer-eligible? | Replacement fires? |
+|---|---|---|---|
+| **Productive (full step budget)** | False | yes | no |
+| **Plateau-aborted** (cleared floor, then stalled) | False | yes | no |
+| **Floor-abandoned** (failed floor + relative-improvement check) | True | no | yes — pulls next archetype |
+
+Plateau-aborted runs write a `{"plateau_aborted": true, …}` JSONL marker (distinct from `{"abandoned": true, …}`), so downstream tools that check `abandoned` correctly classify them as successful.
+
+## Starting a new campaign
+
+1. Copy [_template_campaign.yaml](_template_campaign.yaml) to `campaigns/campaign_<id>_<short_name>.yaml`.
+2. Fill in `campaign_id`, `fitness` (must match a `FITNESS_REGISTRY` key in `run_autodan.py` — add one if your target is new), `target_string`.
+3. Write 3 planned-phase seed files under `seeds/` and reference them from `planned_runs`.
+4. Write 6 replacement-pool seed files (one per archetype) and reference them from `replacement_pool`. Per-target vocabulary varies — see this doc's archetype guidance.
+5. Tune `suffix_init_text` per (planned, replacement) pair so the surrogate's lead-in flows naturally into the target string.
+6. Leave `gcg:` omitted unless a knob needs to differ from default.
+7. Verify with `uv run python scripts/run_adaptive_campaign.py --config campaigns/campaign_<id>_<...>.yaml --dry-run`.

@@ -471,6 +471,42 @@ def test_load_config_default_replacement_cap_is_six(
     assert config.replacement_cap == 6
 
 
+def test_load_config_omitted_gcg_uses_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A YAML without a `gcg:` block inherits DEFAULT_GCG_CONFIG."""
+    repo_root = _stage_repo(tmp_path, monkeypatch)
+    cfg = _make_config_dict(
+        repo_root, planned_ids=["p1"], pool_ids=[],
+    )
+    cfg.pop("gcg")
+    path = _write_yaml(tmp_path, cfg)
+    config = orch.load_config(path)
+    for k, v in orch.DEFAULT_GCG_CONFIG.items():
+        assert config.gcg[k] == v, f"{k} should default to {v}"
+
+
+def test_load_config_partial_gcg_overrides_only_listed_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Partial overrides merge into defaults; unspecified keys use the
+    default value."""
+    repo_root = _stage_repo(tmp_path, monkeypatch)
+    cfg = _make_config_dict(
+        repo_root, planned_ids=["p1"], pool_ids=[],
+    )
+    cfg["gcg"] = {"steps": 42, "abandon_plateau_window": 7}
+    path = _write_yaml(tmp_path, cfg)
+    config = orch.load_config(path)
+    assert config.gcg["steps"] == 42
+    assert config.gcg["abandon_plateau_window"] == 7
+    # Untouched keys still inherit defaults.
+    assert config.gcg["top_k"] == orch.DEFAULT_GCG_CONFIG["top_k"]
+    assert config.gcg["abandon_after_steps"] == (
+        orch.DEFAULT_GCG_CONFIG["abandon_after_steps"]
+    )
+
+
 def test_planned_replacement_fallback_jsonls_persist_independently(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

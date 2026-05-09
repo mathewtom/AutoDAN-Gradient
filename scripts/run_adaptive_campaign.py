@@ -34,15 +34,24 @@ from attacks.autodan_gradient.run_autodan import FITNESS_REGISTRY  # noqa: E402
 
 _REQUIRED_TOP_LEVEL = (
     "campaign_id", "fitness", "target_string", "output_dir",
-    "planned_runs", "gcg",
+    "planned_runs",
 )
 _REQUIRED_RUN_FIELDS = ("id", "seed_file", "suffix_init_text")
-_REQUIRED_GCG_FIELDS = (
-    "steps", "top_k", "batch", "suffix_len",
-    "abandon_after_steps",
-    "abandon_absolute_floor",
-    "abandon_min_improvement_ratio",
-)
+
+# The validated default GCG / abandonment knobs. A YAML may omit any
+# subset; missing keys fall back here. To bake new defaults, change this
+# dict (the source of truth for "what should a fresh campaign use").
+DEFAULT_GCG_CONFIG: dict[str, Any] = {
+    "steps": 500,
+    "top_k": 256,
+    "batch": 16,
+    "suffix_len": 20,
+    "abandon_after_steps": 30,
+    "abandon_absolute_floor": 0.005,
+    "abandon_min_improvement_ratio": 1.5,
+    "abandon_plateau_window": 100,
+    "abandon_plateau_min_delta": 0.0001,
+}
 
 
 @dataclass
@@ -131,12 +140,12 @@ def load_config(path: Path) -> CampaignConfig:
         raw.get("replacement_pool") or [], "replacement_pool",
     )
 
-    gcg = raw["gcg"]
-    if not isinstance(gcg, dict):
+    raw_gcg = raw.get("gcg") or {}
+    if not isinstance(raw_gcg, dict):
         raise ValueError("gcg block must be a mapping")
-    for k in _REQUIRED_GCG_FIELDS:
-        if k not in gcg:
-            raise ValueError(f"gcg missing required field {k!r}")
+    # Merge user overrides into the validated defaults so YAMLs only
+    # specify the knobs they care to override.
+    gcg = {**DEFAULT_GCG_CONFIG, **raw_gcg}
 
     output_dir = Path(raw["output_dir"])
     if not output_dir.is_absolute():
@@ -153,7 +162,7 @@ def load_config(path: Path) -> CampaignConfig:
         output_dir=output_dir,
         planned_runs=planned,
         replacement_pool=replacement_pool,
-        gcg=dict(gcg),
+        gcg=gcg,
         transfer=dict(raw["transfer"]) if raw.get("transfer") else None,
         replacement_cap=replacement_cap,
     )
