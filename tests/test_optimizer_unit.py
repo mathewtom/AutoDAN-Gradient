@@ -358,3 +358,80 @@ def test_run_smoke_end_to_end(tmp_path: Path):
         assert isinstance(line["accepted_loss"], float)
         assert isinstance(line["gradient_loss"], float)
         assert line["survivor_count"] > 0
+
+
+def test_run_abandons_on_plateau_above_floor(tmp_path: Path):
+    """Plateau-abandon: a productive run that clears the floor but
+    stalls should be aborted by the plateau guard."""
+    model = _tiny_model()
+    obj = AutoDANObjective(model, tokenizer=None,
+                           config=ObjectiveConfig(lambda_readability=0.1))
+    gcg = GCGStep(obj, GCGStepConfig(top_k=8, batch_size=8, max_resamples=2))
+    scanner = StubScanner(blocked_substrings=None)
+    tokenizer = StubTokenizer()
+    # Climb then plateau: 0.05 step 1, 0.10 step 2, then flat at 0.10.
+    counter = {"n": 0}
+    def plateau_evaluator(prompt: str) -> dict:
+        counter["n"] += 1
+        if counter["n"] == 1:
+            f = 0.05
+        elif counter["n"] == 2:
+            f = 0.10
+        else:
+            f = 0.10
+        return {"fitness": f, "scanner_score": 0,
+                "leak_score": f, "evasion_score": 1.0}
+    config = OptimizerConfig(
+        n_steps=20,
+        # Disable floor abandon so plateau is the only signal.
+        abandon_after_steps=0,
+        abandon_plateau_window=3,
+        abandon_plateau_min_delta=0.001,
+    )
+    opt = AutoDANOptimizer(
+        gcg_step=gcg, evaluator=plateau_evaluator, scanner=scanner,
+        tokenizer=tokenizer, seed_prefix="hi",
+        config=config,
+    )
+    out = tmp_path / "plateau.jsonl"
+    summary = opt.run(_hand_built_prefix(), out)
+    assert summary.abandoned is True
+    # First step where step > window AND best stable for window steps:
+    # window=3 → step 4 reads best_history[3] - best_history[0] = 0.10 -
+    # 0.05 = 0.05 (not flat). Step 5 reads [4]-[1] = 0.10-0.10 = 0.0.
+    assert summary.abandoned_at_step == 5
+    assert "plateau" in (summary.abandon_reason or "")
+    last = json.loads(out.read_text().splitlines()[-1])
+    assert last.get("abandoned") is True
+
+
+def test_run_continues_when_still_climbing(tmp_path: Path):
+    """Plateau guard must not fire on a run that's still gaining over
+    the window."""
+    model = _tiny_model()
+    obj = AutoDANObjective(model, tokenizer=None,
+                           config=ObjectiveConfig(lambda_readability=0.1))
+    gcg = GCGStep(obj, GCGStepConfig(top_k=8, batch_size=8, max_resamples=2))
+    scanner = StubScanner(blocked_substrings=None)
+    tokenizer = StubTokenizer()
+    # Steady climb of 0.01 per step → always above min_delta.
+    counter = {"n": 0}
+    def climbing_evaluator(prompt: str) -> dict:
+        counter["n"] += 1
+        f = 0.05 + 0.01 * counter["n"]
+        return {"fitness": f, "scanner_score": 0,
+                "leak_score": f, "evasion_score": 1.0}
+    config = OptimizerConfig(
+        n_steps=8,
+        abandon_after_steps=0,
+        abandon_plateau_window=3,
+        abandon_plateau_min_delta=0.001,
+    )
+    opt = AutoDANOptimizer(
+        gcg_step=gcg, evaluator=climbing_evaluator, scanner=scanner,
+        tokenizer=tokenizer, seed_prefix="hi",
+        config=config,
+    )
+    summary = opt.run(_hand_built_prefix(), tmp_path / "climbing.jsonl")
+    assert summary.abandoned is False
+    assert summary.n_steps == 8

@@ -175,6 +175,19 @@ def main() -> int:
              "step_1_fitness, the run continues. Default 1.5 (50% "
              "improvement over the cold-start fitness).",
     )
+    parser.add_argument(
+        "--abandon-plateau-window", type=int, default=0,
+        help="Plateau-window length in steps. Once step > this value, "
+             "if best_fitness has gained less than --abandon-plateau-min-"
+             "delta over the last window steps, abort. Default 0 "
+             "(disabled). 30 is reasonable for productive-but-stuck "
+             "basins.",
+    )
+    parser.add_argument(
+        "--abandon-plateau-min-delta", type=float, default=0.001,
+        help="Minimum best_fitness improvement over the plateau window "
+             "to keep the run going. Default 0.001.",
+    )
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
@@ -257,6 +270,8 @@ def main() -> int:
             abandon_after_steps=args.abandon_after_steps,
             abandon_absolute_floor=args.abandon_absolute_floor,
             abandon_min_improvement_ratio=args.abandon_min_improvement_ratio,
+            abandon_plateau_window=args.abandon_plateau_window,
+            abandon_plateau_min_delta=args.abandon_plateau_min_delta,
         ),
     )
 

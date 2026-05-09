@@ -36,6 +36,13 @@ class OptimizerConfig:
     abandon_after_steps: int = 0
     abandon_absolute_floor: float = 0.005
     abandon_min_improvement_ratio: float = 1.5
+    # Plateau-abandon (opt-in): once step > plateau_window, if best_fitness
+    # gained less than plateau_min_delta over the last plateau_window
+    # steps, abort the run. Catches productive-but-stuck basins that
+    # cleared the floor and stalled. Set `plateau_window` to 0 to
+    # disable.
+    abandon_plateau_window: int = 0
+    abandon_plateau_min_delta: float = 0.001
 
 
 @dataclass
@@ -98,6 +105,7 @@ class AutoDANOptimizer:
         abandoned = False
         abandoned_at_step: int | None = None
         abandon_reason: str | None = None
+        best_history: list[float] = []
 
         with jsonl_path.open("w") as fh:
             for step_idx in range(1, self._config.n_steps + 1):
@@ -129,6 +137,7 @@ class AutoDANOptimizer:
                         survivor_count=0,
                         top_n=top_n,
                     )
+                    best_history.append(top_n[0].fitness if top_n else 0.0)
                     continue
 
                 # GCG step pre-filtered — every entry is scanner-safe.
@@ -155,6 +164,8 @@ class AutoDANOptimizer:
                     survivor_count=len(step_result.candidates),
                     top_n=top_n,
                 )
+
+                best_history.append(top_n[0].fitness if top_n else 0.0)
 
                 # Capture step-1 fitness as the baseline for relative
                 # improvement detection.
@@ -189,6 +200,34 @@ class AutoDANOptimizer:
                             f"at step {step_idx}"
                         )
                         # Write a final marker line for downstream tools.
+                        fh.write(
+                            "{"
+                            f'"abandoned": true, '
+                            f'"abandoned_at_step": {step_idx}, '
+                            f'"abandon_reason": "{abandon_reason}"'
+                            "}\n"
+                        )
+                        fh.flush()
+                        break
+
+                # Plateau-abandon check.
+                window = self._config.abandon_plateau_window
+                if (
+                    window > 0
+                    and step_idx > window
+                    and not abandoned
+                    and len(best_history) > window
+                ):
+                    delta = best_history[-1] - best_history[-1 - window]
+                    if delta < self._config.abandon_plateau_min_delta:
+                        abandoned = True
+                        abandoned_at_step = step_idx
+                        abandon_reason = (
+                            f"plateau: best_fitness gained {delta:.6f} "
+                            f"over last {window} steps "
+                            f"(< {self._config.abandon_plateau_min_delta:.6f}) "
+                            f"at step {step_idx}"
+                        )
                         fh.write(
                             "{"
                             f'"abandoned": true, '

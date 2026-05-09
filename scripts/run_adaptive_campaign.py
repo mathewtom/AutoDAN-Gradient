@@ -228,6 +228,13 @@ def build_run_command(
             "--abandon-min-improvement-ratio",
             str(g["abandon_min_improvement_ratio"]),
         ]
+    if abandon_enabled and int(g.get("abandon_plateau_window", 0)) > 0:
+        cmd += [
+            "--abandon-plateau-window",
+            str(g["abandon_plateau_window"]),
+            "--abandon-plateau-min-delta",
+            str(g.get("abandon_plateau_min_delta", 0.001)),
+        ]
     return cmd
 
 
