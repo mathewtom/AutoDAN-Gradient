@@ -49,7 +49,7 @@ DEFAULT_GCG_CONFIG: dict[str, Any] = {
     "abandon_after_steps": 30,
     "abandon_absolute_floor": 0.005,
     "abandon_min_improvement_ratio": 1.5,
-    "abandon_plateau_window": 100,
+    "abandon_plateau_window": 125,
     "abandon_plateau_min_delta": 0.0001,
 }
 

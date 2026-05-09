@@ -14,7 +14,7 @@
 #   abandon_after_steps: 30           (floor + relative-improvement check)
 #   abandon_absolute_floor: 0.005
 #   abandon_min_improvement_ratio: 1.5
-#   abandon_plateau_window: 100        (rolling 100-step lookback)
+#   abandon_plateau_window: 125        (rolling 125-step lookback)
 #   abandon_plateau_min_delta: 0.0001  (productive-but-stuck cutoff)
 
 campaign_id: X            # short campaign identifier (e.g., D, E)

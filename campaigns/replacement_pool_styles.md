@@ -58,7 +58,7 @@ The orchestrator's `DEFAULT_GCG_CONFIG` (see [run_adaptive_campaign.py](../scrip
 | `abandon_after_steps` | 30 | Step at which the floor + relative-improvement check fires. |
 | `abandon_absolute_floor` | 0.005 | Best-fitness floor; below this is treated as a dead basin. |
 | `abandon_min_improvement_ratio` | 1.5 | Best-fitness must climb to at least 1.5× step-1 fitness. |
-| `abandon_plateau_window` | 100 | Rolling lookback length for the plateau check. |
+| `abandon_plateau_window` | 125 | Rolling lookback length for the plateau check. |
 | `abandon_plateau_min_delta` | 0.0001 | Below this delta over the lookback, plateau-abort fires. |
 
 ## Run outcome categories
