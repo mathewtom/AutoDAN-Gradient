@@ -16,6 +16,9 @@
 #   abandon_min_improvement_ratio: 1.5
 #   abandon_plateau_window: 125        (rolling 125-step lookback)
 #   abandon_plateau_min_delta: 0.0001  (productive-but-stuck cutoff)
+#   fallback_plateau_window: 70        (fallback-only plateau)
+#   fallback_plateau_floor: 0.005      (only triggers below this fitness)
+#   fallback_plateau_min_delta: 0.0001 (and only if flat over the window)
 
 campaign_id: X            # short campaign identifier (e.g., D, E)
 fitness: system_prompt_leak_<TARGET>     # must match a key in FITNESS_REGISTRY in run_autodan.py

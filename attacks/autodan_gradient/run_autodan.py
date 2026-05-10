@@ -188,6 +188,23 @@ def main() -> int:
         help="Minimum best_fitness improvement over the plateau window "
              "to keep the run going. Default 0.001.",
     )
+    parser.add_argument(
+        "--fallback-plateau-window", type=int, default=0,
+        help="Fallback-specific plateau-window length. Triggers only "
+             "when best_fitness is also below the fallback floor — "
+             "productive fallbacks that climb above floor are unaffected. "
+             "Default 0 (disabled).",
+    )
+    parser.add_argument(
+        "--fallback-plateau-floor", type=float, default=0.005,
+        help="Below this best_fitness, fallback-plateau check is "
+             "active. Default 0.005.",
+    )
+    parser.add_argument(
+        "--fallback-plateau-min-delta", type=float, default=0.0001,
+        help="Minimum gain over the fallback plateau window to keep "
+             "the run going. Default 0.0001.",
+    )
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
@@ -272,6 +289,9 @@ def main() -> int:
             abandon_min_improvement_ratio=args.abandon_min_improvement_ratio,
             abandon_plateau_window=args.abandon_plateau_window,
             abandon_plateau_min_delta=args.abandon_plateau_min_delta,
+            fallback_plateau_window=args.fallback_plateau_window,
+            fallback_plateau_floor=args.fallback_plateau_floor,
+            fallback_plateau_min_delta=args.fallback_plateau_min_delta,
         ),
     )
 

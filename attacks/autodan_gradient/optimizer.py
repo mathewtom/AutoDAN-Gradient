@@ -43,6 +43,16 @@ class OptimizerConfig:
     # disable.
     abandon_plateau_window: int = 0
     abandon_plateau_min_delta: float = 0.001
+    # Fallback-specific plateau (opt-in): tighter cutoff for fallback
+    # runs that are stuck below productivity. Fires when both best_fitness
+    # < fallback_plateau_floor AND best_fitness gained less than
+    # fallback_plateau_min_delta over the last fallback_plateau_window
+    # steps. The orchestrator only passes these flags when the run is in
+    # the FALLBACK phase (abandon_enabled=False), so productive fallbacks
+    # that climb above the floor are unaffected.
+    fallback_plateau_window: int = 0
+    fallback_plateau_floor: float = 0.005
+    fallback_plateau_min_delta: float = 0.0001
 
 
 @dataclass
@@ -242,6 +252,43 @@ class AutoDANOptimizer:
                             f"over last {window} steps "
                             f"(< {self._config.abandon_plateau_min_delta:.6f}) "
                             f"at step {step_idx}"
+                        )
+                        fh.write(
+                            "{"
+                            f'"plateau_aborted": true, '
+                            f'"plateau_aborted_at_step": {step_idx}, '
+                            f'"plateau_reason": "{plateau_reason}"'
+                            "}\n"
+                        )
+                        fh.flush()
+                        break
+
+                # Fallback-specific plateau: cut runs that are stuck
+                # BELOW productivity floor. Only triggers when both
+                # below-floor AND flat — productive fallbacks that
+                # climb above floor are protected.
+                fb_window = self._config.fallback_plateau_window
+                if (
+                    fb_window > 0
+                    and step_idx > fb_window
+                    and not abandoned
+                    and not plateau_aborted
+                    and len(best_history) > fb_window
+                ):
+                    current_best = best_history[-1]
+                    fb_delta = current_best - best_history[-1 - fb_window]
+                    if (
+                        current_best < self._config.fallback_plateau_floor
+                        and fb_delta < self._config.fallback_plateau_min_delta
+                    ):
+                        plateau_aborted = True
+                        plateau_aborted_at_step = step_idx
+                        plateau_reason = (
+                            f"fallback-plateau: best_fitness "
+                            f"{current_best:.6f} below floor "
+                            f"{self._config.fallback_plateau_floor:.4f} "
+                            f"and gained {fb_delta:.6f} over last "
+                            f"{fb_window} steps at step {step_idx}"
                         )
                         fh.write(
                             "{"

@@ -60,6 +60,9 @@ The orchestrator's `DEFAULT_GCG_CONFIG` (see [run_adaptive_campaign.py](../scrip
 | `abandon_min_improvement_ratio` | 1.5 | Best-fitness must climb to at least 1.5× step-1 fitness. |
 | `abandon_plateau_window` | 125 | Rolling lookback length for the plateau check. |
 | `abandon_plateau_min_delta` | 0.0001 | Below this delta over the lookback, plateau-abort fires. |
+| `fallback_plateau_window` | 70 | Fallback-only plateau lookback. Tighter than the regular window because fallbacks have already burned through 9+ runs of the pool. |
+| `fallback_plateau_floor` | 0.005 | Fallback plateau-abort fires only if best_fitness is below this floor. Productive fallbacks that climb above are protected. |
+| `fallback_plateau_min_delta` | 0.0001 | Combined with the above: must be flat AND below floor over the window. |
 
 ## Run outcome categories
 

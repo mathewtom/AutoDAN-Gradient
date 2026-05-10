@@ -51,6 +51,12 @@ DEFAULT_GCG_CONFIG: dict[str, Any] = {
     "abandon_min_improvement_ratio": 1.5,
     "abandon_plateau_window": 125,
     "abandon_plateau_min_delta": 0.0001,
+    # Fallback-specific plateau cutoff: only applied during fallback
+    # phase. Catches dead-basin fallbacks stuck below productivity
+    # without killing productive fallbacks that climb above the floor.
+    "fallback_plateau_window": 70,
+    "fallback_plateau_floor": 0.005,
+    "fallback_plateau_min_delta": 0.0001,
 }
 
 
@@ -243,6 +249,17 @@ def build_run_command(
             str(g["abandon_plateau_window"]),
             "--abandon-plateau-min-delta",
             str(g.get("abandon_plateau_min_delta", 0.001)),
+        ]
+    # Fallback-specific plateau is the inverse: only active when
+    # abandon_enabled is False (i.e., during fallback phase).
+    if not abandon_enabled and int(g.get("fallback_plateau_window", 0)) > 0:
+        cmd += [
+            "--fallback-plateau-window",
+            str(g["fallback_plateau_window"]),
+            "--fallback-plateau-floor",
+            str(g.get("fallback_plateau_floor", 0.005)),
+            "--fallback-plateau-min-delta",
+            str(g.get("fallback_plateau_min_delta", 0.0001)),
         ]
     return cmd
 

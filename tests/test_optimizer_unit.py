@@ -408,6 +408,73 @@ def test_run_plateau_aborts_when_stuck_above_floor(tmp_path: Path):
     assert last.get("abandoned") is None
 
 
+def test_run_fallback_plateau_aborts_when_stuck_below_floor(tmp_path: Path):
+    """Fallback plateau: stuck below floor + flat fires the cutoff."""
+    model = _tiny_model()
+    obj = AutoDANObjective(model, tokenizer=None,
+                           config=ObjectiveConfig(lambda_readability=0.1))
+    gcg = GCGStep(obj, GCGStepConfig(top_k=8, batch_size=8, max_resamples=2))
+    scanner = StubScanner(blocked_substrings=None)
+    tokenizer = StubTokenizer()
+    # Constant 0.001: below floor (0.005), flat.
+    def stuck_evaluator(prompt: str) -> dict:
+        return {"fitness": 0.001, "scanner_score": 0,
+                "leak_score": 0.001, "evasion_score": 1.0}
+    config = OptimizerConfig(
+        n_steps=20,
+        # Floor / plateau OFF so only the fallback check fires.
+        abandon_after_steps=0,
+        abandon_plateau_window=0,
+        fallback_plateau_window=3,
+        fallback_plateau_floor=0.005,
+        fallback_plateau_min_delta=0.0001,
+    )
+    opt = AutoDANOptimizer(
+        gcg_step=gcg, evaluator=stuck_evaluator, scanner=scanner,
+        tokenizer=tokenizer, seed_prefix="hi",
+        config=config,
+    )
+    summary = opt.run(_hand_built_prefix(), tmp_path / "fb.jsonl")
+    assert summary.abandoned is False
+    assert summary.plateau_aborted is True
+    assert "fallback-plateau" in (summary.plateau_reason or "")
+
+
+def test_run_fallback_plateau_does_not_fire_above_floor(tmp_path: Path):
+    """Fallback plateau: a productive fallback that climbed above floor
+    should NOT be cut even if it then plateaus."""
+    model = _tiny_model()
+    obj = AutoDANObjective(model, tokenizer=None,
+                           config=ObjectiveConfig(lambda_readability=0.1))
+    gcg = GCGStep(obj, GCGStepConfig(top_k=8, batch_size=8, max_resamples=2))
+    scanner = StubScanner(blocked_substrings=None)
+    tokenizer = StubTokenizer()
+    # Climb to 0.05 (above floor) then plateau.
+    counter = {"n": 0}
+    def evaluator(prompt: str) -> dict:
+        counter["n"] += 1
+        f = 0.05 if counter["n"] >= 2 else 0.01
+        return {"fitness": f, "scanner_score": 0,
+                "leak_score": f, "evasion_score": 1.0}
+    config = OptimizerConfig(
+        n_steps=10,
+        abandon_after_steps=0,
+        abandon_plateau_window=0,
+        fallback_plateau_window=3,
+        fallback_plateau_floor=0.005,
+        fallback_plateau_min_delta=0.0001,
+    )
+    opt = AutoDANOptimizer(
+        gcg_step=gcg, evaluator=evaluator, scanner=scanner,
+        tokenizer=tokenizer, seed_prefix="hi",
+        config=config,
+    )
+    summary = opt.run(_hand_built_prefix(), tmp_path / "fb_above.jsonl")
+    # Above floor — fallback plateau should NOT fire.
+    assert summary.plateau_aborted is False
+    assert summary.n_steps == 10
+
+
 def test_run_continues_when_still_climbing(tmp_path: Path):
     """Plateau guard must not fire on a run that's still gaining over
     the window."""

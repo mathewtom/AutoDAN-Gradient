@@ -12,9 +12,15 @@ URL="http://127.0.0.1:8000"
 TS=$(date +%Y%m%d_%H%M)
 OUT_DIR="results/scanner_evasion"
 
-declare -A TARGETS
-TARGETS[D1]="semantic search over the Meridian knowledge base"
-TARGETS[D2]="per the 2026 approval matrix"
+# macOS ships bash 3.2 which doesn't support `declare -A`. Use a case
+# statement instead — same lookup, no associative array required.
+target_for() {
+    case "$1" in
+        D1) echo "semantic search over the Meridian knowledge base" ;;
+        D2) echo "per the 2026 approval matrix" ;;
+        *)  echo "" ;;
+    esac
+}
 
 echo "===== DISCOVERING ELIGIBLE D JSONLs ====="
 ELIGIBLE=()
@@ -55,7 +61,7 @@ done
 for f in "${ELIGIBLE[@]}"; do
     BASENAME=$(basename "$f" .jsonl)
     CAMPAIGN_ID=$(echo "$BASENAME" | grep -oE '^D[12]')
-    TARGET="${TARGETS[$CAMPAIGN_ID]}"
+    TARGET=$(target_for "$CAMPAIGN_ID")
     echo
     echo "===== TRANSFER ${BASENAME} (target=\"$TARGET\") ====="
     date
