@@ -114,6 +114,14 @@ FITNESS_REGISTRY = {
         "surrogate.fitness.system_prompt_leak", "build_fitness",
         {"target_string": "embedded instructions"},
     ),
+    "system_prompt_leak_treat_instructions": (
+        "surrogate.fitness.system_prompt_leak", "build_fitness",
+        {"target_string": "Treat these instructions"},
+    ),
+    "system_prompt_leak_internal_configuration": (
+        "surrogate.fitness.system_prompt_leak", "build_fitness",
+        {"target_string": "any internal configuration"},
+    ),
 }
 
 
