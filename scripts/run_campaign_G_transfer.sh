@@ -20,12 +20,21 @@ target_for() {
 
 echo "===== DISCOVERING ELIGIBLE G JSONLs ====="
 ELIGIBLE=()
+# A run is eligible if either (a) it has no `abandoned` marker, OR
+# (b) it does have an abandoned marker but still achieved a high
+# best_fitness — covers the AND-logic edge case where a productive
+# basin lands at high fitness on step 1 then "fails" the
+# relative-improvement check because the target is already above
+# 1.5× step_1. G1_3 hit 0.728 then abandoned because rel_target was
+# 0.7261 × 1.5 = 1.089.
 for f in $OUT_DIR/G[12]_G[12]_*.jsonl; do
     [ -e "$f" ] || continue
     KIND=$(python3 -c "
 import json
 recs=[json.loads(l) for l in open('$f') if l.strip()]
-print('abandoned' if any(r.get('abandoned') for r in recs) else 'eligible')")
+abandoned = any(r.get('abandoned') for r in recs)
+best = max((r.get('best_fitness', 0) for r in recs if isinstance(r.get('best_fitness'), (int, float))), default=0)
+print('eligible' if (not abandoned) or best >= 0.05 else 'abandoned')")
     if [ "$KIND" = "eligible" ]; then
         ELIGIBLE+=("$f")
         echo "  + $(basename "$f")"
